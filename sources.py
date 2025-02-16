@@ -3,12 +3,16 @@ import time
 import math
 import threading
 import random
+import socket
 
 class RandomFrames:
-    def __init__(self, q, *args):
-        self.q = q
+    def __init__(self):
+        self.q = None
         self.running = True
         self.db = cantools.database.load_file("/home/matthias/racing/Formula-DBC/main_dbc.dbc")
+
+    def set_queue(self, q):
+        self.q = q
 
     def start(self):
         self.running = True
@@ -52,4 +56,42 @@ class RandomFrames:
                 "VectorNav_VelNedE": -100*math.sin(t)
             })})
             time.sleep(0.01)
-            
+
+class MCAN_Ethernet:
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+        self.q = None
+        self.socket = None
+        self.running = True
+
+    def set_queue(self, q):
+        self.q = q
+    
+    def start(self):
+        self.running = True
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind((self.ip, 0))
+        threading.Thread(target=self.run).start()
+
+    def stop(self):
+        self.running = False
+        self.socket.close()
+
+    def run(self):
+        while running:
+            frame = self.socket.recv(1500)
+            i = 0
+            while i < len(frame)-1:
+                if frame[i:i+2] == b"\x55\xff":
+                    bus, length, id = struct.unpack("<BBI", frame[i+2:i+8])
+                    packet = {"bus": bus, "id": id, "data": frame[i+8:i+4+(length&0x7f)]}
+                    self.q.put(packet)
+                    i += (length & 0x7f)+4
+                else: i += 1
+
+    def transmit(self, packet):
+        frame = bytearray([0x55, 0xff, packet["bus"], 0x80 | (len(packet["data"])+4)])+struct.pack("<I", packet["id"])+packet["data"]
+        self.socket.sendto(frame, (self.ip, self.port))
+
+

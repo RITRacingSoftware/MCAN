@@ -69,8 +69,9 @@ class CANStream:
 
 rootstream = CANStream()
 
-def source(s, *args, **kwargs):
-    source_list.append(s(rxqueue, *args, **kwargs))
+def source(s):
+    s.set_queue(rxqueue)
+    source_list.append(s)
 
 def update():
     global log_window, log_history, log_cursorpos, log_scrolloffset, dash_cursorpos, dash_scrolloffset, stat_npackets, stat_nbytes, stat_dpackets, stat_dbytes, stat_t0
