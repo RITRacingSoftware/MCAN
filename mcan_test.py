@@ -1,4 +1,4 @@
-import mcan
+import mcan_curses as mcan
 import sources
 import mcan_outputs
 
@@ -10,5 +10,4 @@ mcan.rootstream.filter(lambda p: p["bus"] == 1).exec(mcan.dash)
 #mcan.filter(lambda p: p["bus"] == 1).exec(mcan_outputs.ethernet_tx)
 
 mcan.options["interactive"] = True
-mcan.options["dashboardheight"] = 0.75
 mcan.mainloop()
