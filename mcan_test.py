@@ -1,4 +1,8 @@
-import mcan_curses as mcan
+import sys
+if len(sys.argv) > 1 and sys.argv[1] == "curses":
+    import mcan_curses as mcan
+else:
+    import mcan_tkinter as mcan
 import sources
 import mcan_outputs
 
@@ -9,5 +13,4 @@ mcan.source(sources.RandomFrames())
 mcan.rootstream.filter(lambda p: p["bus"] == 1).exec(mcan.dash)
 #mcan.filter(lambda p: p["bus"] == 1).exec(mcan_outputs.ethernet_tx)
 
-mcan.options["interactive"] = True
 mcan.mainloop()
