@@ -16,6 +16,7 @@ can_db = {
 }
 
 def can_decode(packet):
+    if packet["bus"] not in can_db: return {}
     return can_db[packet["bus"]].decode_message(packet["id"], packet["data"])
 
 
