@@ -73,7 +73,7 @@ class MCAN_Ethernet:
     def start(self):
         self.running = True
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((self.ip, 40000))
+        self.socket.bind(('0.0.0.0', 40000))
         threading.Thread(target=self.run).start()
 
     def stop(self):
@@ -95,12 +95,13 @@ class MCAN_Ethernet:
                         msb_loaded = True
                         offset = msb
                 else:
-                    packet = {"bus": bus, "id": id, "data": frame[i+8:i+8+(length&0x7f)], "ts": ts+msb-offset}
+                    packet = {"bus": bus, "id": id, "data": frame[i+8:i+8+(length&0x7f)], "ts": ts+msb-offset, "fd": length>>7}
                     self.q.put(packet)
                 i += (length & 0x7f)+8
 
     def transmit(self, packet):
-        frame = bytearray([0x55, 0xff, packet["bus"], 0x80 | (len(packet["data"])+4)])+struct.pack("<I", packet["id"])+packet["data"]
+        frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])+8), 0, packet["id"])+packet["data"]
+        print(frame, self.ip, self.port)
         self.socket.sendto(frame, (self.ip, self.port))
 
 
