@@ -106,10 +106,15 @@ class MainWindow(tkinter.Tk):
         self.dash_elements = []
         self.dash_data = {}
         self.boot = None
+        
+        rootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.forward_boot)
+
+    def forward_boot(self, packet):
+        if self.boot is not None and not self.boot.closed:
+            self.boot.onrecv(packet)
 
     def open_bootloader(self):
         self.boot = bootloader.Bootloader(transmit)
-        rootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.boot.onrecv)
 
     def dash_update(self, packet):
         index = 0

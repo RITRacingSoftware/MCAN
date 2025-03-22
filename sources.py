@@ -100,8 +100,7 @@ class MCAN_Ethernet:
                 i += (length & 0x7f)+8
 
     def transmit(self, packet):
-        frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])+8), 0, packet["id"])+packet["data"]
-        print(frame, self.ip, self.port)
+        frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), 0, packet["id"])+packet["data"]
         self.socket.sendto(frame, (self.ip, self.port))
 
 
