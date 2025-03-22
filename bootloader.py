@@ -2,6 +2,7 @@ import tkinter
 from tkinter import ttk
 import struct
 import mcan_utils
+import json
 
 class Bootloader(tkinter.Toplevel):
     def __init__(self, txfunc):
@@ -44,8 +45,11 @@ class Bootloader(tkinter.Toplevel):
 
         self.bind_all("<ButtonRelease-1>", self.click)
 
-        self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x00\x00\x00\x00\xef\xcd\xab', 'ts': 63604, 'fd': 1})
-        self.after(3000, self.simulate_state)
+        with open("config.json") as f:
+            self.config = json.load(f)
+
+        #self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x00\x00\x00\x00\xef\xcd\xab', 'ts': 63604, 'fd': 1})
+        #self.after(3000, self.simulate_state)
 
 
     def simulate_state(self):
@@ -54,8 +58,17 @@ class Bootloader(tkinter.Toplevel):
     def send_command(self, bus, id, data):
         self.txfunc({"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True})
 
+    def start_read(self, bus, id, address, length, bankmode):
+        self.txfunc({"bus": bus, "data": struct.pack("<BB", length, bankmode), "id": (1<<30) | (id<<18) | address | (1<<17) | (1<<16), "fd": True})
+
     def boot_all(self):
         self.send_command(1, 0x7ff, b"\x55"*8)
+        self.after(500, self.read_bank_identifiers)
+
+    def read_bank_identifiers(self):
+        for board in self.boards:
+            self.requests[board] = "readname"
+            self.start_read(1, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1))
 
     def open_context_menu(self, event):
         tablepos = event.y_root - self.table.winfo_rooty()
@@ -102,10 +115,14 @@ class Bootloader(tkinter.Toplevel):
     def onrecv(self, packet):
         print("Bootloader received", packet, hex(packet["id"]))
         self.parse_response(packet, True)
-        if packet["board"] not in self.boards:
+        board = packet["board"]
+        if board not in self.boards:
             row = len(self.boards)+1
-            ttk.Label(self.table, text=str(packet["board"])).grid(row=row, column=0)
-            #statelabel = ttk.Label(self.table, text=hex(packet["bootstate"])[2:].rjust(8, "0").upper(), font=("Ubuntu Mono", 0))
+            ttk.Label(self.table, text=str(board)).grid(row=row, column=0)
+            b1label = ttk.Label(self.table, text="")
+            b1label.grid(row=row, column=1)
+            b2label = ttk.Label(self.table, text="")
+            b2label.grid(row=row, column=2)
             statelabel = mcan_utils.BitFieldLabel(self.table, "Boot state", packet["bootstate"], [
                 (24, lambda v: "State key "+("(correct)" if v == 0xABCDEF else "(invalid)")), 
                 (1, mcan_utils.expand_wsbool("ERROR")),
@@ -122,17 +139,29 @@ class Bootloader(tkinter.Toplevel):
             bblabel.grid(row=row, column=4)
             rblabel = ttk.Label(self.table, text=("2" if packet["bankstatus"] & 0x01 else "1"))
             rblabel.grid(row=row, column=5)
-            self.boards[packet["board"]] = {
+            self.boards[board] = {
                 "index": len(self.boards),
                 "elements": [
-                    None, None, statelabel, bblabel, rblabel
+                    b1label, b2label, statelabel, bblabel, rblabel
                 ],
                 "bankstatus": packet["bankstatus"],
                 "bootstate": packet["bootstate"]
             }
-        else:
-            self.boards[packet["board"]]["elements"][2].set_value(packet["bootstate"])
-            self.boards[packet["board"]]["elements"][3].config(text=("2" if packet["bankstatus"] & 0x02 else "1"))
-            self.boards[packet["board"]]["elements"][4].config(text=("2" if packet["bankstatus"] & 0x01 else "1"))
+        elif packet["type"] == "status":
+            self.boards[board]["elements"][2].set_value(packet["bootstate"])
+            self.boards[board]["elements"][3].config(text=("2" if packet["bankstatus"] & 0x02 else "1"))
+            self.boards[board]["elements"][4].config(text=("2" if packet["bankstatus"] & 0x01 else "1"))
+        elif packet["type"] == "data":
+            if self.requests[board] == "readname":
+                name = packet["data"].strip(b"\x00").decode()
+                self.boards[board]["bank1"] = name
+                self.boards[board]["elements"][0].config(text=name)
+                self.requests[packet["board"]] = "readname2"
+                self.start_read(1, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1)^1)
+            elif self.requests[board] == "readname2":
+                name = packet["data"].strip(b"\x00").decode()
+                self.boards[board]["bank2"] = name
+                self.boards[board]["elements"][1].config(text=name)
+                
         
 
