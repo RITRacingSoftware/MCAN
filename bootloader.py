@@ -40,8 +40,9 @@ class Bootloader(tkinter.Toplevel):
 
         self.contextmenu = tkinter.Menu(self, tearoff=0)
         self.contextmenu.add_command(label="Program", command=self.program)
+        self.contextmenu.add_command(label="Boot", command=self.boot)
         self.contextmenu.add_command(label="Soft bank swap", command=self.soft_bank_swap)
-        self.contextmenu.add_command(label="Toggle booting bank", command=self.full_bank_swap)
+        self.contextmenu.add_command(label="Toggle booting bank", command=self.hard_bank_swap)
         self.contextmenu.bind("<FocusOut>", self.focusout)
 
         self.bind("<ButtonRelease-1>", self.click)
@@ -72,8 +73,14 @@ class Bootloader(tkinter.Toplevel):
         self.send_command(1, 0x7ff, b"\x55"*8)
         self.after(500, self.read_bank_identifiers)
 
+    def boot(self, board=None):
+        if board is None: board = self.context_target
+        self.boards[board]["booted"] = True
+        self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
+
     def read_bank_identifiers(self):
         for board in self.boards:
+            print("Reading bank identifiers", board)
             self.boards[board]["operation"] = "readname1"
             self.start_read(self.boards[board]["bus"], board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1))
 
@@ -81,7 +88,7 @@ class Bootloader(tkinter.Toplevel):
         try:
             address, data = next(self.boards[board]["generator"])
         except StopIteration:
-            self.boards[board]["operation"] = ""
+            self.hard_bank_swap(board)
             return
         self.boards[board]["offset"] = address
         self.boards[board]["lastwrite"] = data
@@ -136,24 +143,55 @@ class Bootloader(tkinter.Toplevel):
 
     def program(self):
         print("Programming", self.context_target)
-        self.boards[self.context_target]["operation"] = "program"
+        self.boards[self.context_target]["operation"] = "program1"
         self.boards[self.context_target]["generator"] = self.generate_frames(self.config[self.context_target]["program"])
         self.send_command(self.boards[self.context_target]["bus"], self.context_target, b"\x55"*8)
 
-    def soft_bank_swap(self):
-        print("Soft bank swap", self.context_target)
+    def soft_bank_swap(self, board=None):
+        if board is None: board = self.context_target
+        print("Soft bank swap", board)
+        if not self.boards[board]["booted"]:
+            print("Board is not booted")
+            self.boards[board]["operation"] = "softswap"
+            self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
+        else:
+            self.boards[board]["operation"] = ""
+            self.send_command(self.boards[board]["bus"], board, b"\x01")
 
-    def full_bank_swap(self):
-        print("Full swap", self.context_target)
+    def hard_bank_swap(self, board=None):
+        if board is None: board = self.context_target
+        print("Full swap", board)
+        if self.boards[board]["operation"] == "hardswap1":
+            self.boards[board]["operation"] = "hardswap2"
+            print("Hard swap: switching to NB bank")
+            self.send_command(self.boards[board]["bus"], board, b"\x01")
+        elif self.boards[board]["operation"] == "hardswap2":
+            print("Hard swap: Entering NB bootloader")
+            self.boards[board]["operation"] = "hardswap3"
+            self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
+        elif self.boards[board]["operation"] == "hardswap3":
+            print("Hard swap: NB boot reset")
+            self.boards[board]["operation"] = "hardswap4"
+        elif self.boards[board]["operation"] == "hardswap4":
+            print("Hard swap: Verifying")
+            self.boards[board]["operation"] = "hardswap5"
+            self.send_command(self.boards[board]["bus"], board, b"\x02")
+        elif self.boards[board]["operation"] == "hardswap5":
+            print("Hard swap: finalizing")
+            self.boards[board]["operation"] = ""
+            self.send_command(self.boards[board]["bus"], board, b"\x03")
+        else:
+            self.boards[board]["operation"] = "hardswap1"
+            self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
 
     def parse_response(self, packet, print_response=False):
         packet["board"] = (packet["id"]>>18) & 0x7f
-        if print_response: print("bus {:02x}, id {}/{:08x} (device {})".format(packet["bus"], "EXT" if (packet["id"] & (1<<30)) else "STD", packet["id"] & 0x1fffffff, packet["board"]))
         if (packet["id"] & (1<<30)):
             if (packet["id"] & (1<<16)):
                 packet["type"] = "data"
-                if print_response: print("    Data", packet["data"])
+                #if print_response: print("    Data", packet["data"])
             else:
+                if print_response: print("bus {:02x}, id {}/{:08x} (device {})".format(packet["bus"], "EXT" if (packet["id"] & (1<<30)) else "STD", packet["id"] & 0x1fffffff, packet["board"]))
                 stat = struct.unpack("<BBHI", packet["data"])
                 packet["type"] = "status"
                 packet["status"], packet["bankstatus"], packet["flashstatus"], packet["bootstate"] = stat
@@ -161,7 +199,7 @@ class Bootloader(tkinter.Toplevel):
 
     def onrecv(self, packet):
         #print("Bootloader received", packet, hex(packet["id"]))
-        self.parse_response(packet)
+        self.parse_response(packet, True)
         board = packet["board"]
         if board not in self.boards:
             row = len(self.boards)+1
@@ -204,15 +242,27 @@ class Bootloader(tkinter.Toplevel):
                 "operation": "",
                 "offset": 0,
                 "lastwrite": b"",
-                "generator": None
+                "generator": None,
+                "booted": True
             }
         elif packet["type"] == "status":
+            self.boards[board]["booted"] = True
             self.boards[board]["elements"][2].set_value(packet["bootstate"])
             self.boards[board]["elements"][3].config(text=("2" if packet["bankstatus"] & 0x02 else "1"))
             self.boards[board]["elements"][4].config(text=("2" if packet["bankstatus"] & 0x01 else "1"))
-            if self.boards[board]["operation"] == "program":
+            # Status message after reset
+            if self.boards[board]["operation"] == "program1":
+                self.boards[board]["operation"] = "program2"
+            # Board has entered bootloader and is ready to receive data
+            elif self.boards[board]["operation"] == "program2":
                 self.boards[board]["operation"] = "write"
                 self.start_write_from_generator(board)
+            elif self.boards[board]["operation"] == "softswap":
+                print("Continuing with soft swap")
+                self.soft_bank_swap(board)
+            elif self.boards[board]["operation"].startswith("hardswap"):
+                print("Continuing with hard swap")
+                self.hard_bank_swap(board)
 
         elif packet["type"] == "data":
             if self.boards[board]["operation"] == "readname1":
@@ -225,6 +275,7 @@ class Bootloader(tkinter.Toplevel):
                 name = packet["data"].strip(b"\x00").decode()
                 self.boards[board]["bank2"] = name
                 self.boards[board]["elements"][1].config(text=name)
+                self.boards[board]["booted"] = False
                 self.send_command(self.boards[board]["bus"], board, b"\x00")
             elif self.boards[board]["operation"] == "write":
                 readback = packet["data"]
