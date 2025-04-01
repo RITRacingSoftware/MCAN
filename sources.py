@@ -32,20 +32,21 @@ class RandomFrames:
             if t - tb >= 1:
                 i = 0
                 packet = {}
-                for s in "ABCD":
-                    for n in range(1, 20):
-                        packet["BMS_Voltages_"+s+str(n)] = 3.7
+                for s in "ABCDEFGH":
+                    for n in range(1, 18):
+                        packet["BMS_Voltages_"+s+str(n)] = random.random()*2 + 2.5
                         i += 1
                         if (i % 6) == 0:
                             packet["BMS_Voltages_mux"] = (i//6)-1
-                            self.q.put({"bus": 1, "id": 702, "data": self.db.encode_message(702, packet), "ts": time.time()})
+                            self.q.put({"bus": 2, "id": 702, "data": self.db.encode_message(702, packet), "ts": time.time()*1000000})
                             packet = {}
+                tb = t
             unpacked = {"TireTemp_FL_Max": tv, "TireTemp_FR_Max": tv, "TireTemp_RL_Max": tv, "TireTemp_RR_Max": tv}
             data = self.db.encode_message(1874, unpacked)
-            self.q.put({"bus": 1, "id": 1874, "data": data, "ts": time.time()})
+            self.q.put({"bus": 2, "id": 1874, "data": data, "ts": time.time()*1000000})
             time.sleep(0.02)
             data = self.db.encode_message(1875, {"RotorTemp_FL_Max": tv, "RotorTemp_FR_Max": tv, "RotorTemp_RL_Max": tv, "RotorTemp_RR_Max": tv})
-            self.q.put({"bus": 1, "id": 1875, "data": data, "ts": time.time()})
+            self.q.put({"bus": 2, "id": 1875, "data": data, "ts": time.time()*1000000})
             time.sleep(random.random()*0.03 + 0.085)
 
     def run_fast(self):
@@ -53,10 +54,10 @@ class RandomFrames:
         n = 0
         while self.running:
             t = time.time() - t0
-            self.q.put({"bus": 1, "id": 505, "data": self.db.encode_message(505, {
+            self.q.put({"bus": 2, "id": 505, "data": self.db.encode_message(505, {
                 "VectorNav_VelNedN": 100*math.cos(t),
                 "VectorNav_VelNedE": -100*math.sin(t),
-            }), "ts": time.time()})
+            }), "ts": time.time()*1000000})
             time.sleep(0.005)
 
 class MCAN_Ethernet:

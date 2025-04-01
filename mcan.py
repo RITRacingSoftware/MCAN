@@ -17,14 +17,16 @@ rxqueue = queue.Queue()
 filter_list = []
 
 can_db = {
-    1: cantools.database.load_file("/home/matthias/racing/Formula-DBC/main_dbc.dbc")
-#    2: cantools.database.load_file("/home/matthias/racing/Formula-DBC/sensor_dbc.dbc"),
-#    3: cantools.database.load_file("/home/matthias/racing/Formula-DBC/inverter_dbc.dbc")
+    1: cantools.database.load_file("/home/matthias/racing/Formula-DBC/sensor_dbc.dbc"),
+    2: cantools.database.load_file("/home/matthias/racing/Formula-DBC/main_dbc.dbc"),
+    3: cantools.database.load_file("/home/matthias/racing/Formula-DBC/inverter_dbc.dbc")
 }
 
 def can_decode(packet):
     if packet["bus"] not in can_db: return {}
-    return can_db[packet["bus"]].decode_message(packet["id"], packet["data"])
+    db = can_db[packet["bus"]]
+    if packet["id"] not in db._frame_id_to_message: return {}
+    return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 
 
 class CANStream:
@@ -47,7 +49,8 @@ class CANStream:
                 part = b[1](element)
                 if part is not None: b[2].apply(part)
 
-rootstream = CANStream()
+rxrootstream = CANStream()
+txrootstream = CANStream()
 
 def source(s):
     s.set_queue(rxqueue)
@@ -62,12 +65,8 @@ def stop_sources():
         s.stop()
 
 def transmit(packet):
-    for s in source_list:
-        if callable(getattr(s, "transmit", None)):
-            s.transmit(packet)
+    txrootstream.apply(packet)
 
-
-window = None
 
 def dash(packet):
     if window is not None: window.dash_update(packet)
@@ -87,15 +86,17 @@ class MainWindow(tkinter.Tk):
         #self.menubar.add_cascade(label="Bootloader", menu=self.bootmenu)
 
         self.dash = ttk.Treeview(self)
-        self.dash["columns"] = ["bus", "id", "data", "cycle", "count"]
+        self.dash["columns"] = ["bus", "id", "signame", "data", "cycle", "count"]
         self.dash.column("#0", width=30, stretch=tkinter.NO)
         self.dash.column("bus", width=50, stretch=tkinter.NO)
         self.dash.column("id", width=50, stretch=tkinter.NO)
+        self.dash.column("signame", width=300, stretch=tkinter.YES)
         self.dash.column("data", width=300, stretch=tkinter.YES)
         self.dash.column("cycle", width=50, stretch=tkinter.NO, anchor=tkinter.E)
         self.dash.column("count", width=50, stretch=tkinter.NO)
         self.dash.heading("bus", text="Bus", anchor=tkinter.CENTER)
         self.dash.heading("id", text="ID", anchor=tkinter.CENTER)
+        self.dash.heading("signame", text="Signal name", anchor=tkinter.CENTER)
         self.dash.heading("data", text="Data", anchor=tkinter.CENTER)
         self.dash.heading("cycle", text="Cycle", anchor=tkinter.CENTER)
         self.dash.heading("count", text="Count", anchor=tkinter.CENTER)
@@ -107,7 +108,7 @@ class MainWindow(tkinter.Tk):
         self.dash_data = {}
         self.boot = None
         
-        rootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.forward_boot)
+        rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.forward_boot)
 
     def forward_boot(self, packet):
         if self.boot is not None and not self.boot.closed:
@@ -128,36 +129,37 @@ class MainWindow(tkinter.Tk):
         else:
             self.dash_elements.insert(index, iid)
             print("inserting", iid, index, self.dash_elements)
-        if (packet["bus"], packet["id"]) in self.dash_data:
-            pass
-            self.dash_data[packet["bus"], packet["id"]]["raw"] = packet["data"]
-            decoded = can_decode(packet)
+        if iid in self.dash_data:
+            self.dash_data[iid]["raw"] = packet["data"]
+            self.dash_data[iid]["count"] += 1
+            message, decoded = can_decode(packet)
             for d in decoded:
                 if d not in self.dash_data[packet["bus"], packet["id"]]["data"]:
                     self.dash.insert(parent=iid, index="end", text="", values=("", "", d+": "+str(decoded[d])), iid=(iid[0], iid[1], d))
                 else:
-                    self.dash.item((iid[0], iid[1], d), values=("", "", d+": "+str(decoded[d])))
+                    self.dash.item((iid[0], iid[1], d), values=("", "", d, str(decoded[d])))
                 self.dash_data[packet["bus"], packet["id"]]["data"][d] = decoded[d]
-            self.dash.item(iid, values=(packet["bus"], packet["id"], " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), packet["ts"]-self.dash_data[packet["bus"], packet["id"]]["last_ts"]))
+            self.dash.item(iid, values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), packet["ts"]-self.dash_data[iid]["last_ts"], self.dash_data[iid]["count"]))
             self.dash_data[packet["bus"], packet["id"]]["last_ts"] = packet["ts"]
         else:
-            decoded = can_decode(packet)
-            self.dash_data[packet["bus"], packet["id"]] = {
+            message, decoded = can_decode(packet)
+            self.dash_data[iid] = {
                 "expanded": True,
                 "raw": packet["data"],
                 "data": decoded,
-                "last_ts": packet["ts"]
+                "last_ts": packet["ts"],
+                "count": 1
             }
             self.dash.insert(parent="", index=(index if index >= 0 else "end"), iid=iid, text="", 
-                values=(packet["bus"], packet["id"], " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"])))
+                values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), "", self.dash_data[iid]["count"]))
             for k in decoded:
-                self.dash.insert(parent=iid, index="end", text="", values=("", "", k+": "+str(decoded[k])), iid=(iid[0], iid[1], k))
+                self.dash.insert(parent=iid, index="end", text="", values=("", "", k, str(decoded[k])), iid=(iid[0], iid[1], k))
 
     def update(self):
         try:
             while True:
                 packet = rxqueue.get_nowait()
-                rootstream.apply(packet)
+                rxrootstream.apply(packet)
         except queue.Empty: pass
         self.after(10, self.update)
 
