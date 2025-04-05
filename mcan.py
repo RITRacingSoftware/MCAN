@@ -8,6 +8,7 @@ import tkinter
 from tkinter import ttk
 import tkinter.font
 
+import mcan_dash
 import sources
 import bootloader
 
@@ -21,12 +22,6 @@ can_db = {
     2: cantools.database.load_file("/home/matthias/racing/Formula-DBC/main_dbc.dbc"),
     3: cantools.database.load_file("/home/matthias/racing/Formula-DBC/inverter_dbc.dbc")
 }
-
-def can_decode(packet):
-    if packet["bus"] not in can_db: return {}
-    db = can_db[packet["bus"]]
-    if packet["id"] not in db._frame_id_to_message: return {}
-    return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 
 
 class CANStream:
@@ -68,8 +63,8 @@ def transmit(packet):
     txrootstream.apply(packet)
 
 
-def dash(packet):
-    if window is not None: window.dash_update(packet)
+def dash(packet, target):
+    if window is not None: window.dash_update(packet, target)
 
 class MainWindow(tkinter.Tk):
     def __init__(self):
@@ -84,31 +79,32 @@ class MainWindow(tkinter.Tk):
         #self.bootmenu = tkinter.Menu(self.menubar, tearoff=0)
         self.menubar.add_command(label="Bootloader", command=self.open_bootloader)
         #self.menubar.add_cascade(label="Bootloader", menu=self.bootmenu)
-
-        self.dash = ttk.Treeview(self)
-        self.dash["columns"] = ["bus", "id", "signame", "data", "cycle", "count"]
-        self.dash.column("#0", width=30, stretch=tkinter.NO)
-        self.dash.column("bus", width=50, stretch=tkinter.NO)
-        self.dash.column("id", width=50, stretch=tkinter.NO)
-        self.dash.column("signame", width=300, stretch=tkinter.YES)
-        self.dash.column("data", width=300, stretch=tkinter.YES)
-        self.dash.column("cycle", width=50, stretch=tkinter.NO, anchor=tkinter.E)
-        self.dash.column("count", width=50, stretch=tkinter.NO)
-        self.dash.heading("bus", text="Bus", anchor=tkinter.CENTER)
-        self.dash.heading("id", text="ID", anchor=tkinter.CENTER)
-        self.dash.heading("signame", text="Signal name", anchor=tkinter.CENTER)
-        self.dash.heading("data", text="Data", anchor=tkinter.CENTER)
-        self.dash.heading("cycle", text="Cycle", anchor=tkinter.CENTER)
-        self.dash.heading("count", text="Count", anchor=tkinter.CENTER)
-        self.dash.grid(row=0, column=0, sticky="news")
-
         self.config(menu=self.menubar)
 
-        self.dash_elements = []
-        self.dash_data = {}
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=0, column=0, sticky="news")
+
         self.boot = None
+
+        self.dash_targets = {}
         
         rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.forward_boot)
+        self.protocol("WM_DELETE_WINDOW", self.on_quit)
+
+        #for target in ["all", "sensor", "main", "inverter"]:
+        #    self.dash_targets[target] = mcan_dash.CANDashboard(self, target)
+        #    self.notebook.add(self.dash_targets[target], text=target)
+
+    def on_quit(self):
+        for d in self.dash_targets:
+            self.dash_targets[d].close()
+        self.destroy()
+
+    def can_decode(self, packet):
+        if packet["bus"] not in can_db: return {}
+        db = can_db[packet["bus"]]
+        if packet["id"] not in db._frame_id_to_message: return {}
+        return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 
     def forward_boot(self, packet):
         if self.boot is not None and not self.boot.closed:
@@ -117,43 +113,11 @@ class MainWindow(tkinter.Tk):
     def open_bootloader(self):
         self.boot = bootloader.Bootloader(transmit)
 
-    def dash_update(self, packet):
-        index = 0
-        iid = (packet["bus"], packet["id"])
-        for i in range(len(self.dash_elements)):
-            if iid > self.dash_elements[i]:
-                index += 1
-            if self.dash_elements[i] == iid:
-                index = i
-                break
-        else:
-            self.dash_elements.insert(index, iid)
-            print("inserting", iid, index, self.dash_elements)
-        if iid in self.dash_data:
-            self.dash_data[iid]["raw"] = packet["data"]
-            self.dash_data[iid]["count"] += 1
-            message, decoded = can_decode(packet)
-            for d in decoded:
-                if d not in self.dash_data[packet["bus"], packet["id"]]["data"]:
-                    self.dash.insert(parent=iid, index="end", text="", values=("", "", d+": "+str(decoded[d])), iid=(iid[0], iid[1], d))
-                else:
-                    self.dash.item((iid[0], iid[1], d), values=("", "", d, str(decoded[d])))
-                self.dash_data[packet["bus"], packet["id"]]["data"][d] = decoded[d]
-            self.dash.item(iid, values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), packet["ts"]-self.dash_data[iid]["last_ts"], self.dash_data[iid]["count"]))
-            self.dash_data[packet["bus"], packet["id"]]["last_ts"] = packet["ts"]
-        else:
-            message, decoded = can_decode(packet)
-            self.dash_data[iid] = {
-                "expanded": True,
-                "raw": packet["data"],
-                "data": decoded,
-                "last_ts": packet["ts"],
-                "count": 1
-            }
-            self.dash.insert(parent="", index=(index if index >= 0 else "end"), iid=iid, text="", 
-                values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), "", self.dash_data[iid]["count"]))
-            for k in decoded:
-                self.dash.insert(parent=iid, index="end", text="", values=("", "", k, str(decoded[k])), iid=(iid[0], iid[1], k))
+    def dash_update(self, packet, target):
+        if target not in self.dash_targets:
+            self.dash_targets[target] = mcan_dash.CANDashboard(self, target)
+            self.notebook.add(self.dash_targets[target], text=target)
+        self.dash_targets[target].dash_update(packet)
 
     def update(self):
         try:

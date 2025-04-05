@@ -5,6 +5,7 @@ import struct
 import mcan_utils
 import json
 import os.path
+import collections
 
 class Bootloader(tkinter.Toplevel):
     def __init__(self, txfunc):
@@ -21,8 +22,9 @@ class Bootloader(tkinter.Toplevel):
         
         tkinter.Button(self, text="Boot all", command=self.boot_all).grid(row=0, column=0, sticky="w")
         tkinter.Button(self, text="test", command=self.test_can).grid(row=0, column=1, sticky="w")
+        tkinter.Button(self, text="C70 toggle", command=self.toggle_c70).grid(row=0, column=2, sticky="w")
         self.table = ttk.LabelFrame(self, text="Boards")
-        self.table.grid(row=1, column=0, columnspan=2, sticky="news")
+        self.table.grid(row=1, column=0, columnspan=3, sticky="news")
         self.table.columnconfigure(0, minsize=30)
         self.table.columnconfigure(1, minsize=50, weight=1)
         self.table.columnconfigure(2, minsize=50, weight=1)
@@ -52,11 +54,21 @@ class Bootloader(tkinter.Toplevel):
 
         self.protocol("WM_DELETE_WINDOW", self.on_quit)
 
+        self.c70_state = False
+
         #self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x00\x00\x00\x00\xef\xcd\xab', 'ts': 63604, 'fd': 1})
         #self.after(3000, self.simulate_state)
 
     def test_can(self):
         self.send_command(2, 0, b"\x00"*64)
+
+    def toggle_c70(self):
+        self.c70_state = not self.c70_state
+        #self.txfunc({"bus": 2, "data": struct.pack("<B", int(self.c70_state))+b"\x00\x00\x00\x00\x00\x00\x00", "id": 1793, "fd": False})
+        if self.c70_state:
+            self.txfunc({"bus": 2, "data": b"\xff"*8, "id": 1793, "fd": False})
+        else:
+            self.txfunc({"bus": 2, "data": b"\x00"*8, "id": 1793, "fd": False})
 
     def simulate_state(self):
         self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x01\x00\x00\xC0\xef\xcd\xab', 'ts': 63604, 'fd': 1})
@@ -150,13 +162,8 @@ class Bootloader(tkinter.Toplevel):
     def soft_bank_swap(self, board=None):
         if board is None: board = self.context_target
         print("Soft bank swap", board)
-        if not self.boards[board]["booted"]:
-            print("Board is not booted")
-            self.boards[board]["operation"] = "softswap"
-            self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
-        else:
-            self.boards[board]["operation"] = ""
-            self.send_command(self.boards[board]["bus"], board, b"\x01")
+        self.boards[board]["operation"] = "softswap"
+        self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
 
     def hard_bank_swap(self, board=None):
         if board is None: board = self.context_target
@@ -240,6 +247,7 @@ class Bootloader(tkinter.Toplevel):
                 "bankstatus": packet["bankstatus"],
                 "bootstate": packet["bootstate"],
                 "operation": "",
+                "ops": collections.deque(),
                 "offset": 0,
                 "lastwrite": b"",
                 "generator": None,

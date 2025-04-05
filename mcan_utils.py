@@ -4,6 +4,7 @@ from tkinter import ttk
 def expand_wsbool(name):
     return lambda x: name + ": "+("Set" if x else "Not set")
 
+
 class BitFieldLabel(ttk.Label):
     def __init__(self, master, name, value, fmt, **kwargs):
         self.value = value
