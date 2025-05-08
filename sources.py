@@ -10,7 +10,7 @@ class RandomFrames:
     def __init__(self):
         self.q = None
         self.running = True
-        self.db = cantools.database.load_file("/home/matthias/racing/Formula-DBC/main_dbc.dbc")
+        self.db = cantools.database.load_file("../Formula-DBC/main_dbc.dbc")
 
     def set_queue(self, q):
         self.q = q

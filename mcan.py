@@ -18,9 +18,9 @@ rxqueue = queue.Queue()
 filter_list = []
 
 can_db = {
-    1: cantools.database.load_file("/home/matthias/racing/Formula-DBC/sensor_dbc.dbc"),
-    2: cantools.database.load_file("/home/matthias/racing/Formula-DBC/main_dbc.dbc"),
-    3: cantools.database.load_file("/home/matthias/racing/Formula-DBC/inverter_dbc.dbc")
+    1: cantools.database.load_file("../Formula-DBC/sensor_dbc.dbc"),
+    2: cantools.database.load_file("../Formula-DBC/main_dbc.dbc"),
+    3: cantools.database.load_file("../Formula-DBC/inverter_dbc.dbc")
 }
 
 
@@ -76,9 +76,9 @@ class MainWindow(tkinter.Tk):
         style.configure("Treeview", font=("Ubuntu Mono", 10))
 
         self.menubar = tkinter.Menu(self)
-        #self.bootmenu = tkinter.Menu(self.menubar, tearoff=0)
-        self.menubar.add_command(label="Bootloader", command=self.open_bootloader)
-        #self.menubar.add_cascade(label="Bootloader", menu=self.bootmenu)
+        self.bootmenu = tkinter.Menu(self.menubar, tearoff=0)
+        self.bootmenu.add_command(label="Bootloader", command=self.open_bootloader)
+        self.menubar.add_cascade(label="Bootloader", menu=self.bootmenu)
         self.config(menu=self.menubar)
 
         self.notebook = ttk.Notebook(self)
