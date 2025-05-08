@@ -60,6 +60,56 @@ class RandomFrames:
             }), "ts": time.time()*1000000, "fd": False})
             time.sleep(0.005)
 
+class Replay:
+    def __init__(self, fname, bus, scale=1):
+        self.fname = fname
+        self.bus = bus
+        self.scale = scale
+        self.q = None
+        self.running = True
+    
+    def set_queue(self, q):
+        self.q = q
+
+    def start(self):
+        self.running = True
+        threading.Thread(target=self.run).start()
+
+    def stop(self):
+        self.running = False
+
+    def run(self):
+        t0 = 0
+        ts0 = 0
+        offset_ready = False
+        with open(self.fname, "rb") as f:
+            head = f.read(24)
+            while self.running:
+                head = f.read(16)
+                if len(head) == 0:
+                    offset_ready = False
+                    f.seek(0)
+                    print("rolling over")
+                    continue
+                sec, usec, length = struct.unpack("<3I", head[:12])
+                ts = sec + usec / 1000000.0
+                data = f.read(length)
+                if offset_ready:
+                    t = (time.time() - t0)/self.scale + ts0
+                    if t < ts: time.sleep(self.scale*(ts - t))
+                else:
+                    ts0 = ts
+                    t0 = time.time()
+                    offset_ready = True
+                packet = {
+                    "id": struct.unpack(">I", data[:4])[0],
+                    "fd": data[5] > 0,
+                    "ts": ts*1000000,
+                    "data": data[8:],
+                    "bus": self.bus
+                }
+                self.q.put(packet)
+
 class MCAN_Ethernet:
     def __init__(self, ip, port):
         self.ip = ip
