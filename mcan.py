@@ -95,6 +95,7 @@ class MainWindow(tkinter.Tk):
         #for target in ["all", "sensor", "main", "inverter"]:
         #    self.dash_targets[target] = mcan_dash.CANDashboard(self, target)
         #    self.notebook.add(self.dash_targets[target], text=target)
+        self.ts = time.time()
 
     def on_quit(self):
         for d in self.dash_targets:
@@ -103,9 +104,9 @@ class MainWindow(tkinter.Tk):
         self.destroy()
 
     def can_decode(self, packet):
-        if packet["bus"] not in can_db: return {}
+        if packet["bus"] not in can_db: return None, {}
         db = can_db[packet["bus"]]
-        if packet["id"] not in db._frame_id_to_message: return {}
+        if packet["id"] not in db._frame_id_to_message: return None, {}
         return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 
     def forward_boot(self, packet):
@@ -117,22 +118,21 @@ class MainWindow(tkinter.Tk):
 
     def dash_update(self, packet, target):
         if target not in self.dash_targets:
-            self.dash_targets[target] = mcan_dash.CANDashboard(self, target)
+            self.dash_targets[target] = mcan_dash.CANDashboard(self, target, self.can_decode)
             self.notebook.add(self.dash_targets[target], text=target)
         self.dash_targets[target].dash_update(packet)
 
     def update(self):
-        print("updating", time.time())
+        #print("updating", time.time())
         t0 = time.time()
         try:
             while True:
                 packet = rxqueue.get_nowait()
+                print("\r"+str(packet["ts"]/1000000 - time.time() + self.ts), end="")
                 rxrootstream.apply(packet)
-                if time.time() - t0 > 0.02:
-                    for d in self.dash_targets:
-                        self.dash_targets[d].dash.update()
-                    t0 = time.time()
         except queue.Empty: pass
+        for d in self.dash_targets:
+            self.dash_targets[d].update_elements()
         self.after(10, self.update)
 
 

@@ -2,8 +2,9 @@ import tkinter
 from tkinter import ttk
 import struct
 
+
 class CANDashboard(tkinter.Frame):
-    def __init__(self, master, name, *args, **kwargs):
+    def __init__(self, master, name, can_db, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
 
         self.name = name
@@ -26,12 +27,51 @@ class CANDashboard(tkinter.Frame):
         self.dash.grid(row=0, column=0, sticky="news")
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        
+
         self.dash_elements = []
         self.dash_data = {}
+        self.dash_changes = {}
+        self.can_decode = can_db
         
         self.pcapfile = open("/tmp/log{}.pcap".format(name), "wb")
         self.pcapfile.write(b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\x00\xe3\x00\x00\x00")
+
+    def apply_packet(self, packet, dec, tree, el):
+        if not el["signals"]:
+            for sig in tree:
+                mux = not isinstance(sig, str)
+                name = list(sig.keys())[0] if mux else sig
+                l = {
+                    "iid": el["iid"] + (name,),
+                    "mux": mux,
+                    "name": name,
+                }
+                el["signals"].append(l)
+                if mux: l["value"] = {}
+                else: l["value"] = dec[l["name"]]
+                self.dash.insert(parent=el["iid"], index="end", text="", values=("", "", l["name"], l["value"], "", ""), iid=l["iid"])
+        for t, l in zip(tree, el["signals"]):
+            v = dec[l["name"]]
+            if l["mux"]:
+                if v not in l["value"]:
+                    l["value"][v] = {
+                        "iid": l["iid"] + (v,),
+                        "name": "",
+                        "raw": (v,),
+                        "signals": [],
+                        "count": 0,
+                        "cycle": 0,
+                        "last_ts": packet["ts"]
+                    }
+                    self.dash.insert(parent=l["iid"], index="end", iid=l["iid"]+(v,), text="", 
+                        values=("", "", l["value"][v]["name"], v , "", 0))
+                l["value"][v]["count"] += 1
+                l["value"][v]["cycle"] = packet["ts"] - l["value"][v]["last_ts"]
+                l["value"][v]["last_ts"] = packet["ts"]
+                self.apply_packet(packet, dec, t[l["name"]][v], l["value"][v])
+            else:
+                l["value"] = dec[l["name"]]
+
 
     def dash_update(self, packet):
         if self.pcapfile is not None:
@@ -42,41 +82,56 @@ class CANDashboard(tkinter.Frame):
 
         index = 0
         iid = (packet["bus"], packet["id"])
+        msg, dec = self.can_decode(packet)
+        # Determine where the new packet should be inserted so the IDs are in order
         for i in range(len(self.dash_elements)):
-            if iid > self.dash_elements[i]:
+            if iid > self.dash_elements[i]["iid"]:
                 index += 1
-            if self.dash_elements[i] == iid:
+            if self.dash_elements[i]["iid"] == iid:
                 index = i
                 break
         else:
-            self.dash_elements.insert(index, iid)
-            print("inserting", iid, index, self.dash_elements)
-        if iid in self.dash_data:
-            self.dash_data[iid]["raw"] = packet["data"]
-            self.dash_data[iid]["count"] += 1
-            message, decoded = self.master.can_decode(packet)
-            for d in decoded:
-                if d not in self.dash_data[packet["bus"], packet["id"]]["data"]:
-                    self.dash.insert(parent=iid, index="end", text="", values=("", "", d+": "+str(decoded[d])), iid=(iid[0], iid[1], d))
-                else:
-                    self.dash.item((iid[0], iid[1], d), values=("", "", d, str(decoded[d])))
-                self.dash_data[packet["bus"], packet["id"]]["data"][d] = decoded[d]
-            self.dash.item(iid, values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), packet["ts"]-self.dash_data[iid]["last_ts"], self.dash_data[iid]["count"]))
-            self.dash_data[packet["bus"], packet["id"]]["last_ts"] = packet["ts"]
-        else:
-            message, decoded = self.master.can_decode(packet)
-            self.dash_data[iid] = {
-                "expanded": True,
+            el = {
+                "iid": iid,
+                "name": msg.name if msg is not None else "",
                 "raw": packet["data"],
-                "data": decoded,
-                "last_ts": packet["ts"],
-                "count": 1
+                "signals": [],
+                "count": 0,
+                "cycle": 0,
+                "last_ts": packet["ts"]
             }
+            self.dash_elements.insert(index, el)
             self.dash.insert(parent="", index=(index if index >= 0 else "end"), iid=iid, text="", 
-                values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), "", self.dash_data[iid]["count"]))
-            for k in decoded:
-                self.dash.insert(parent=iid, index="end", text="", values=("", "", k, str(decoded[k])), iid=(iid[0], iid[1], k))
-        #self.dash.update()
+                values=(packet["bus"], packet["id"], el["name"], " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), "", 0))
+            if msg is not None:
+                self.apply_packet(packet, dec, msg.signal_tree, el)
+            print("inserting", iid, index, self.dash_elements[index])
+            return
+        
+        el = self.dash_elements[index]
+        el["count"] += 1
+        el["cycle"] = packet["ts"] - el["last_ts"]
+        el["last_ts"] = packet["ts"]
+        el["raw"] = packet["data"]
+        if msg is not None:
+            self.apply_packet(packet, dec, msg.signal_tree, el)
+    
+    def update_element(self, el):
+        if "signals" in el:
+            self.dash.item(el["iid"], values=(el["iid"][0], el["iid"][1], el["name"], " ".join(hex(x)[2:].rjust(2, "0") for x in el["raw"]), el["cycle"], el["count"]))
+            for l in el["signals"]:
+                self.update_element(l)
+        else:
+            if el["mux"]:
+                self.dash.item(el["iid"], values=("", "", el["name"], "", "", ""))
+                for m in el["value"]:
+                    self.update_element(el["value"][m])
+            else:
+                self.dash.item(el["iid"], values=("", "", el["name"], el["value"], "", ""))
+
+    def update_elements(self):
+        for el in self.dash_elements:
+            self.update_element(el)
 
     def close(self):
         self.pcapfile.close()
