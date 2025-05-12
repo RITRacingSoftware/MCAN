@@ -76,6 +76,7 @@ class CANDashboard(tkinter.Frame):
                 values=(packet["bus"], packet["id"], message.name, " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), "", self.dash_data[iid]["count"]))
             for k in decoded:
                 self.dash.insert(parent=iid, index="end", text="", values=("", "", k, str(decoded[k])), iid=(iid[0], iid[1], k))
+        #self.dash.update()
 
     def close(self):
         self.pcapfile.close()

@@ -3,6 +3,7 @@ import threading
 import os
 import cantools
 import queue
+import time
 
 import tkinter
 from tkinter import ttk
@@ -98,6 +99,7 @@ class MainWindow(tkinter.Tk):
     def on_quit(self):
         for d in self.dash_targets:
             self.dash_targets[d].close()
+        stop_sources()
         self.destroy()
 
     def can_decode(self, packet):
@@ -120,10 +122,16 @@ class MainWindow(tkinter.Tk):
         self.dash_targets[target].dash_update(packet)
 
     def update(self):
+        print("updating", time.time())
+        t0 = time.time()
         try:
             while True:
                 packet = rxqueue.get_nowait()
                 rxrootstream.apply(packet)
+                if time.time() - t0 > 0.02:
+                    for d in self.dash_targets:
+                        self.dash_targets[d].dash.update()
+                    t0 = time.time()
         except queue.Empty: pass
         self.after(10, self.update)
 

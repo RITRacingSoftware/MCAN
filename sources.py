@@ -89,6 +89,7 @@ class Replay:
                 if len(head) == 0:
                     offset_ready = False
                     f.seek(0)
+                    f.read(24)
                     print("rolling over")
                     continue
                 sec, usec, length = struct.unpack("<3I", head[:12])
