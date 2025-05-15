@@ -27,6 +27,10 @@ class CANDashboard(tkinter.Frame):
         self.dash.grid(row=0, column=0, sticky="news")
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
+        
+        vsb = ttk.Scrollbar(self, orient="vertical", command=self.dash.yview)
+        vsb.grid(row=0, column=1, sticky="news")
+        self.dash.config(yscrollcommand=vsb.set)
 
         self.dash_elements = []
         self.dash_data = {}
@@ -105,7 +109,7 @@ class CANDashboard(tkinter.Frame):
                 values=(packet["bus"], packet["id"], el["name"], " ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]), "", 0))
             if msg is not None:
                 self.apply_packet(packet, dec, msg.signal_tree, el)
-            print("inserting", iid, index, self.dash_elements[index])
+            #print("inserting", iid, index, self.dash_elements[index])
             return
         
         el = self.dash_elements[index]

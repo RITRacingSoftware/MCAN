@@ -85,6 +85,30 @@ class MainWindow(tkinter.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.grid(row=0, column=0, sticky="news")
 
+        self.stats_table = tkinter.Frame(self)
+        self.stats_table.grid(row=1, column=0, sticky="news")
+
+        self.stats = {
+            "total_packets": 0,
+            "last_packets": 0, 
+            "total_bytes": 0,
+            "last_bytes": 0,
+            "last_time": 0
+        }
+        tkinter.Label(self.stats_table, text="Total packets", font=(None, 10)).grid(row=0, column=0, sticky="w")
+        tkinter.Label(self.stats_table, text="Packet rate", font=(None, 10)).grid(row=0, column=2, sticky="w")
+        tkinter.Label(self.stats_table, text="Total bytes", font=(None, 10)).grid(row=1, column=0, sticky="w")
+        tkinter.Label(self.stats_table, text="Byte rate", font=(None, 10)).grid(row=1, column=2, sticky="w")
+        tkinter.Label(self.stats_table, text="Total time", font=(None, 10)).grid(row=2, column=0, sticky="w")
+        tkinter.Label(self.stats_table, text="Backlog", font=(None, 10)).grid(row=2, column=2, sticky="w")
+        self.stats_elements = [tkinter.Label(self.stats_table, font=(None, 10)) for x in range(6)]
+        for l, (r, c) in zip(self.stats_elements, [(0, 1), (0, 3), (1, 1), (1, 3), (2, 1), (2, 3)]):
+            l.grid(row=r, column=c, sticky="w")
+        self.stats_table.grid_columnconfigure(1, weight=1, minsize=100)
+        self.stats_table.grid_columnconfigure(3, weight=1, minsize=100)
+
+        self.grid_rowconfigure(0, weight=1)
+
         self.boot = None
 
         self.dash_targets = {}
@@ -92,10 +116,8 @@ class MainWindow(tkinter.Tk):
         rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.forward_boot)
         self.protocol("WM_DELETE_WINDOW", self.on_quit)
 
-        #for target in ["all", "sensor", "main", "inverter"]:
-        #    self.dash_targets[target] = mcan_dash.CANDashboard(self, target)
-        #    self.notebook.add(self.dash_targets[target], text=target)
         self.ts = time.time()
+        self.update_stats()
 
     def on_quit(self):
         for d in self.dash_targets:
@@ -122,25 +144,39 @@ class MainWindow(tkinter.Tk):
             self.notebook.add(self.dash_targets[target], text=target)
         self.dash_targets[target].dash_update(packet)
 
-    def update(self):
-        #print("updating", time.time())
+    def update_elements(self):
         t0 = time.time()
         try:
             while True:
                 packet = rxqueue.get_nowait()
-                print("\r"+str(packet["ts"]/1000000 - time.time() + self.ts), end="")
+                self.stats["total_packets"] += 1
+                self.stats["total_bytes"] += len(packet["data"])
                 rxrootstream.apply(packet)
         except queue.Empty: pass
         for d in self.dash_targets:
             self.dash_targets[d].update_elements()
-        self.after(10, self.update)
+        self.after(10, self.update_elements)
+
+    def update_stats(self):
+        t = time.time()
+        diff = t - self.stats["last_time"]
+        self.stats["last_time"] = t
+        self.stats_elements[0]["text"] = "{} packets".format(self.stats["total_packets"])
+        self.stats_elements[1]["text"] = "{:.4f} packets/s".format((self.stats["total_packets"] - self.stats["last_packets"])/diff)
+        self.stats_elements[2]["text"] = "{} B".format(self.stats["total_bytes"])
+        self.stats_elements[3]["text"] = "{:.4f} B/s".format((self.stats["total_bytes"] - self.stats["last_bytes"])/diff)
+        self.stats_elements[4]["text"] = "{:.4f}".format(t - self.ts)
+        self.stats_elements[5]["text"] = "{} packets".format(rxqueue.qsize())
+        self.stats["last_packets"] = self.stats["total_packets"]
+        self.stats["last_bytes"] = self.stats["total_bytes"]
+        self.after(500, self.update_stats)
 
 
 def mainloop():
     global window
     window = MainWindow()
     start_sources()
-    window.update()
+    window.update_elements()
     try:
         tkinter.mainloop()
     finally:
