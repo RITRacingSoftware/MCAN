@@ -5,6 +5,7 @@ import threading
 import random
 import socket
 import struct
+import serial
 
 class RandomFrames:
     def __init__(self):
@@ -59,6 +60,52 @@ class RandomFrames:
                 "VectorNav_VelNedE": -100*math.sin(t),
             }), "ts": time.time()*1000000, "fd": False})
             time.sleep(0.005)
+
+class LoRATelemetry:
+    def __init__(self, port):
+        self.port = port
+        self.running = True
+        self.q = None
+
+    def start(self):
+        self.s = serial.Serial(self.port, 115200)
+        self.s.write(b"AT+BAND=915000000,M\r\n")
+        print(self.s.readline())
+        self.s.write(b"AT+PARAMETER=5,9,1,4\r\n")
+        self.s.write(b"AT+NETWORKID=18\r\n")
+        self.s.write(b"AT+ADDRESS=6\r\n")
+        self.running = True
+        threading.Thread(target=self.run).start()
+
+    def stop(self):
+        self.running = False
+        self.s.close()
+
+    def set_queue(self, q):
+        self.q = q
+
+    def run(self):
+        while self.running:
+            l = self.s.readline()
+            if l.startswith(b"+OK"):
+                continue
+            if l.startswith(b"+ERR"):
+                pass
+                print("Received error from LoRA", l.decode())
+            if l.startswith(b"+RCV"):
+                ch, length, data = l.split(b",", 2)
+                length = int(length)
+                # use <= here since the data may end in a \n, but the trailing info must still be read
+                while len(data) <= length:
+                    data += self.s.readline()
+                data = data.rsplit(b",", 2)[0]
+                i = 0
+                while i < len(data):
+                    bus, length, ts, id = struct.unpack("<BBHI", data[i:i+8])
+                    packet = {"bus": bus, "id": id, "data": data[i+8:i+8+(length&0x7f)], "ts": time.time()*1000000, "fd": length>>7}
+                    self.q.put(packet)
+                    i += (length & 0x7f)+8
+
 
 class Replay:
     def __init__(self, fname, bus, scale=1):
