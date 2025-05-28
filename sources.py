@@ -6,6 +6,7 @@ import random
 import socket
 import struct
 import serial
+import zlib
 
 class RandomFrames:
     def __init__(self):
@@ -99,10 +100,15 @@ class LoRATelemetry:
                 while len(data) <= length:
                     data += self.s.readline()
                 data = data.rsplit(b",", 2)[0]
+                if ch == b"+RCV=8":
+                    try:
+                        data = zlib.decompress(data)
+                    except zlib.error:
+                        data = b""
                 i = 0
                 while i < len(data):
-                    bus, length, ts, id = struct.unpack("<BBHI", data[i:i+8])
-                    packet = {"bus": bus, "id": id, "data": data[i+8:i+8+(length&0x7f)], "ts": time.time()*1000000, "fd": length>>7}
+                    bus, length, tsl, id, tsh = struct.unpack("<BBHHH", data[i:i+8])
+                    packet = {"bus": bus, "id": id, "data": data[i+8:i+8+(length&0x7f)], "ts": tsl | (tsh << 16), "fd": length>>7}
                     self.q.put(packet)
                     i += (length & 0x7f)+8
 
