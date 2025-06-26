@@ -41,30 +41,46 @@ class Bootloader(tkinter.Toplevel):
         self.closed = False
         self.context_target = None
         self.title("Bootloader")
-        self.geometry("600x200")
 
         self.columnconfigure(1, weight=1)
         self.rowconfigure(1, weight=1)
         
-        tkinter.Button(self, text="Boot all", command=self.boot_all).grid(row=0, column=0, sticky="w")
-        tkinter.Button(self, text="test", command=self.test_can).grid(row=0, column=1, sticky="w")
-        tkinter.Button(self, text="C70 toggle", command=self.toggle_c70).grid(row=0, column=2, sticky="w")
+        self.menubar = tkinter.Menu(self)
+        self.cmdmenu = tkinter.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Commands", menu=self.cmdmenu)
+        self.cmdmenu.add_command(label="Boot all", command=self.boot_all)
+        self.cmdmenu.add_command(label="Disable non-boot messages", command=self.txoff)
+        self.cmdmenu.add_command(label="Disable C70", command=self.toggle_c70)
+        self.config(menu=self.menubar)
+        
         self.table = ttk.LabelFrame(self, text="Boards")
         self.table.grid(row=1, column=0, columnspan=3, sticky="news")
-        self.table.columnconfigure(0, minsize=30)
-        self.table.columnconfigure(1, minsize=50, weight=1)
-        self.table.columnconfigure(2, minsize=50, weight=1)
-        self.table.columnconfigure(3, minsize=30)
-        self.table.columnconfigure(4, minsize=30)
-        self.table.columnconfigure(5, minsize=30)
-        self.table.bind_all("<Button-3>", self.open_context_menu)
-        ttk.Label(self.table, text="ID").grid(row=0, column=0)
-        ttk.Label(self.table, text="Bank 1").grid(row=0, column=1)
-        ttk.Label(self.table, text="Bank 2").grid(row=0, column=2)
-        ttk.Label(self.table, text="State").grid(row=0, column=3)
-        ttk.Label(self.table, text="BB").grid(row=0, column=4)
-        ttk.Label(self.table, text="RB").grid(row=0, column=5)
-        ttk.Label(self.table, text="Filename").grid(row=0, column=6)
+        self.table.rowconfigure(0, weight=1)
+        self.table.columnconfigure(0, weight=1)
+
+        self.treeview = ttk.Treeview(self.table)
+        self.treeview.bind("<Button-3>", self.open_context_menu)
+        self.treeview["columns"] = ["id", "bank1", "bank2", "state", "bb", "rb", "fname"]
+        self.treeview.column("#0", width=0, stretch=tkinter.NO)
+        self.treeview.column("id", width=30, stretch=tkinter.NO)
+        self.treeview.column("bank1", width=200, stretch=tkinter.YES)
+        self.treeview.column("bank2", width=200, stretch=tkinter.YES)
+        self.treeview.column("state", width=70, stretch=tkinter.NO)
+        self.treeview.column("bb", width=30, stretch=tkinter.NO, anchor=tkinter.E)
+        self.treeview.column("rb", width=30, stretch=tkinter.NO)
+        self.treeview.column("fname", width=100, stretch=tkinter.NO)
+        self.treeview.heading("id", text="ID", anchor=tkinter.CENTER)
+        self.treeview.heading("bank1", text="Bank 1", anchor=tkinter.CENTER)
+        self.treeview.heading("bank2", text="Bank 2", anchor=tkinter.CENTER)
+        self.treeview.heading("state", text="State", anchor=tkinter.CENTER)
+        self.treeview.heading("bb", text="BB", anchor=tkinter.CENTER)
+        self.treeview.heading("rb", text="RB", anchor=tkinter.CENTER)
+        self.treeview.heading("fname", text="Filename", anchor=tkinter.CENTER)
+        self.treeview.grid(row=0, column=0, sticky="news")
+        
+        vsb = ttk.Scrollbar(self.table, orient="vertical", command=self.treeview.yview)
+        vsb.grid(row=0, column=1, sticky="news")
+        self.treeview.config(yscrollcommand=vsb.set)
 
         self.contextmenu = tkinter.Menu(self, tearoff=0)
         self.contextmenu.add_command(label="Program", command=self.program)
@@ -84,6 +100,9 @@ class Bootloader(tkinter.Toplevel):
 
         #self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x00\x00\x00\x00\xef\xcd\xab', 'ts': 63604, 'fd': 1})
         #self.after(3000, self.simulate_state)
+
+    def txoff(self):
+        pass
 
     def test_can(self):
         self.send_command(2, 0, b"\x00"*64)
@@ -147,12 +166,12 @@ class Bootloader(tkinter.Toplevel):
         name = self.boards[board]["last_packet"]["data"].strip(b"\x00").decode()
         print("First bank", name)
         self.boards[board]["bank1"] = name
-        self.boards[board]["elements"][0].config(text=name)
+        self.update_board_item(board)
         yield self.make_read(bus, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1)^1)
         name = self.boards[board]["last_packet"]["data"].strip(b"\x00").decode()
         print("Second bank", name)
         self.boards[board]["bank2"] = name
-        self.boards[board]["elements"][1].config(text=name)
+        self.update_board_item(board)
         yield self.make_command(bus, board, b"\x00")
 
     def soft_bank_swap_gen(self, board):
@@ -292,6 +311,11 @@ class Bootloader(tkinter.Toplevel):
                 packet["status"], packet["bankstatus"], packet["flashstatus"], packet["bootstate"] = stat
                 if print_response: print("    Status {:02x}, bank status {:02x}, FLASH status {:04x}, boot state {:08x}".format(*stat))
 
+    def update_board_item(self, board):
+        b = self.boards[board]
+        self.treeview.item(board, values=(board, b.get("bank1", ""), b.get("bank2", ""), hex(b["bootstate"])[2:].rjust(8, "0"), ("2" if b["bankstatus"] & 0x02 else "1"), 
+                           ("2" if b["bankstatus"] & 0x01 else "1"), os.path.basename(self.config[board]["program"])))
+
     def onrecv(self, packet):
         #print("Bootloader received", packet, hex(packet["id"]))
         self.parse_response(packet, True)
@@ -302,36 +326,11 @@ class Bootloader(tkinter.Toplevel):
                 self.config[board] = {
                     "program": ""
                 }
-            ttk.Label(self.table, text=str(board)).grid(row=row, column=0)
-            b1label = ttk.Label(self.table, text="")
-            b1label.grid(row=row, column=1)
-            b2label = ttk.Label(self.table, text="")
-            b2label.grid(row=row, column=2)
-            statelabel = mcan_utils.BitFieldLabel(self.table, "Boot state", packet["bootstate"], [
-                (24, lambda v: "State key "+("(correct)" if v == 0xABCDEF else "(invalid)")), 
-                (1, mcan_utils.expand_wsbool("ERROR")),
-                (1, mcan_utils.expand_wsbool("NB_ERROR")),
-                (1, None),
-                (1, mcan_utils.expand_wsbool("ENTER")),
-                (1, mcan_utils.expand_wsbool("VERIFIED")),
-                (1, mcan_utils.expand_wsbool("SOFT_SWITCHED")),
-                (1, mcan_utils.expand_wsbool("VERIFY_SOFT_SWITCH")),
-                (1, mcan_utils.expand_wsbool("VERIFY"))
-            ], anchor="center")
-            statelabel.grid(row=row, column=3)
-            bblabel = ttk.Label(self.table, text=("2" if packet["bankstatus"] & 0x02 else "1"))
-            bblabel.grid(row=row, column=4)
-            rblabel = ttk.Label(self.table, text=("2" if packet["bankstatus"] & 0x01 else "1"))
-            rblabel.grid(row=row, column=5)
-            fnlabel = ttk.Label(self.table, text=os.path.basename(self.config[board]["program"]), anchor="center")
-            fnlabel.grid(row=row, column=6, sticky="news")
-            fnlabel.bind("<Double-Button-1>", lambda evt: self.set_filename(board))
+            self.treeview.insert(iid=board, parent="", text="", index="end", values=(board, "", "", hex(packet["bootstate"])[2:].rjust(8, "0"), ("2" if packet["bankstatus"] & 0x02 else "1"), 
+                                 ("2" if packet["bankstatus"] & 0x01 else "1"), os.path.basename(self.config[board]["program"])))
             self.boards[board] = {
                 "index": len(self.boards),
                 "bus": packet["bus"],
-                "elements": [
-                    b1label, b2label, statelabel, bblabel, rblabel, fnlabel
-                ],
                 "bankstatus": packet["bankstatus"],
                 "bootstate": packet["bootstate"],
                 "operation": "",
@@ -357,9 +356,9 @@ class Bootloader(tkinter.Toplevel):
                 
         elif packet["type"] == "status":
             self.boards[board]["booted"] = True
-            self.boards[board]["elements"][2].set_value(packet["bootstate"])
-            self.boards[board]["elements"][3].config(text=("2" if packet["bankstatus"] & 0x02 else "1"))
-            self.boards[board]["elements"][4].config(text=("2" if packet["bankstatus"] & 0x01 else "1"))
+            self.boards[board]["bootstate"] = packet["bootstate"]
+            self.boards[board]["bankstatus"] = packet["bankstatus"]
+            self.update_board_item(board)
             # Status message after reset
             if self.boards[board]["operation"] == "program1":
                 self.boards[board]["operation"] = "program2"
@@ -372,19 +371,7 @@ class Bootloader(tkinter.Toplevel):
                 self.hard_bank_swap(board)
 
         elif packet["type"] == "data":
-            if self.boards[board]["operation"] == "readname1":
-                name = packet["data"].strip(b"\x00").decode()
-                self.boards[board]["bank1"] = name
-                self.boards[board]["elements"][0].config(text=name)
-                self.boards[board]["operation"] = "readname2"
-                self.start_read(self.boards[board]["bus"], board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1)^1)
-            elif self.boards[board]["operation"] == "readname2":
-                name = packet["data"].strip(b"\x00").decode()
-                self.boards[board]["bank2"] = name
-                self.boards[board]["elements"][1].config(text=name)
-                self.boards[board]["booted"] = False
-                self.send_command(self.boards[board]["bus"], board, b"\x00")
-            elif self.boards[board]["operation"] == "write":
+            if self.boards[board]["operation"] == "write":
                 readback = packet["data"]
                 if packet["id"] & (1<<15): readback = readback[:-8]
                 if self.boards[board]["offset"] != packet["id"]&0x7fff:
@@ -407,16 +394,13 @@ class Bootloader(tkinter.Toplevel):
 
     def open_context_menu(self, event):
         print("opening menu")
-        tablepos = event.y_root - self.table.winfo_rooty()
-        for board in self.boards:
-            x, y, width, height = self.table.grid_bbox(0, self.boards[board]["index"]+1)
-            if y <= tablepos < y + height:
-                self.context_target = board
-                try:
-                    self.contextmenu.tk_popup(event.x_root, event.y_root)
-                finally:
-                    self.contextmenu.grab_release()
-                break
+        iid = self.treeview.identify_row(event.y)
+        if iid:
+            self.context_target = int(iid)
+            try:
+                self.contextmenu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.contextmenu.grab_release()
 
     def focusout(self, event):
         if self.focus_get() != self.contextmenu:
