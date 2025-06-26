@@ -6,6 +6,32 @@ import mcan_utils
 import json
 import os.path
 import collections
+import threading
+
+BOOT_STATE_KEY =          0xABCDEF00
+BOOT_STATE_NORMAL =             0x00
+BOOT_STATE_VERIFY =             0x01
+BOOT_STATE_VERIFY_SOFT_SWITCH = 0x02
+BOOT_STATE_SOFT_SWITCHED =      0x04
+BOOT_STATE_VERIFIED =           0x08
+BOOT_STATE_ENTER =              0x10
+BOOT_STATE_ERROR =              0x80
+BOOT_STATE_NB_ERROR =           0x40
+
+
+BOOT_STATUS_OK =                0x00
+BOOT_STATUS_INVALID_ADDRESS =   0x01
+BOOT_STATUS_ERASE_ERROR =       0x02
+BOOT_STATUS_PROG_ERROR =        0x03
+BOOT_STATUS_STATE_ERROR =       0x04
+BOOT_STATUS_NB_ERROR =          0x05
+BOOT_STATUS_ALREADY_BOOTED =    0x06
+BOOT_STATUS_NO_BSM =            0x07
+BOOT_STATUS_SOFTSWAP_SUCCESS =  0x08
+BOOT_STATUS_MAINBANK =          0x09
+
+class BootloaderError(Exception):
+    pass
 
 class Bootloader(tkinter.Toplevel):
     def __init__(self, txfunc):
@@ -76,8 +102,14 @@ class Bootloader(tkinter.Toplevel):
     def send_command(self, bus, id, data):
         self.txfunc({"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True})
 
+    def make_command(self, bus, id, data):
+        return {"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True}
+
     def start_read(self, bus, id, address, length, bankmode):
         self.txfunc({"bus": bus, "data": struct.pack("<BB", length, bankmode), "id": (1<<30) | (id<<18) | address | (1<<17) | (1<<16), "fd": True})
+    
+    def make_read(self, bus, id, address, length, bankmode):
+        return {"bus": bus, "data": struct.pack("<BB", length, bankmode), "id": (1<<30) | (id<<18) | address | (1<<17) | (1<<16), "fd": True}
 
     def boot_all(self):
         for r in self.boards:
@@ -85,16 +117,78 @@ class Bootloader(tkinter.Toplevel):
         self.send_command(1, 0x7ff, b"\x55"*8)
         self.after(500, self.read_bank_identifiers)
 
+    def start_operation(self, board, gen):
+        self.boards[board]["op_generator"] = gen
+        self.txfunc(next(gen))
+
+    #######################################################
+    # Generator functions for operations
+    #######################################################
+    
+    def boot_gen(self, board):
+        bus = self.boards[board]["bus"]
+        yield self.make_command(bus, board, b"\x55"*8)
+        status = self.boards[board]["last_packet"]["status"]
+        if status == BOOT_STATUS_MAINBANK or status == BOOT_STATUS_SOFTSWAP_SUCCESS:
+            # Wait for BOOT_STATUS_OK message
+            yield None
+        elif status == BOOT_STATUS_ALREADY_BOOTED:
+            print("Already booted")
+            return
+        else:
+            print("Invalid response received", self.boards[board]["last_packet"])
+            raise BootloaderError
+        if self.boards[board]["last_packet"]["status"] == BOOT_STATUS_OK:
+            print("Booted successfully")
+
+    def read_bank_identifiers_gen(self, board):
+        bus = self.boards[board]["bus"]
+        yield self.make_read(bus, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1))
+        name = self.boards[board]["last_packet"]["data"].strip(b"\x00").decode()
+        print("First bank", name)
+        self.boards[board]["bank1"] = name
+        self.boards[board]["elements"][0].config(text=name)
+        yield self.make_read(bus, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1)^1)
+        name = self.boards[board]["last_packet"]["data"].strip(b"\x00").decode()
+        print("Second bank", name)
+        self.boards[board]["bank2"] = name
+        self.boards[board]["elements"][1].config(text=name)
+        yield self.make_command(bus, board, b"\x00")
+
+    def soft_bank_swap_gen(self, board):
+        bus = self.boards[board]["bus"]
+        yield from self.boot_gen(board)
+        yield self.make_command(bus, board, b"\x01")
+        packet = self.boards[board]["last_packet"]
+        if packet["status"] == BOOT_STATUS_MAINBANK and packet["bootstate"] == BOOT_STATE_KEY | BOOT_STATE_NB_ERROR | BOOT_STATE_VERIFY_SOFT_SWITCH:
+            raise BootloaderError("BSM in non-booting bank did not run")
+        if not (packet["status"] == BOOT_STATUS_SOFTSWAP_SUCCESS and packet["bootstate"] == BOOT_STATE_KEY | BOOT_STATE_SOFT_SWITCHED):
+            raise BootloaderError("Unknown error while soft switching (status {}, state {:08x})".format(packet["status"], packet["bootstate"]))
+        print("After soft swap", self.boards[board]["last_packet"])
+
+    def hard_bank_swap_gen(self, board):
+        bus = self.boards[board]["bus"]
+        yield from self.soft_bank_swap_gen(board)
+
+
+
+    #######################################################
+    # Operations
+    #######################################################
+
     def boot(self, board=None):
         if board is None: board = self.context_target
-        self.boards[board]["booted"] = True
-        self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
+        self.start_operation(board, self.boot_gen(board))
 
     def read_bank_identifiers(self):
         for board in self.boards:
             print("Reading bank identifiers", board)
-            self.boards[board]["operation"] = "readname1"
-            self.start_read(self.boards[board]["bus"], board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1))
+            self.start_operation(board, self.read_bank_identifiers_gen(board))
+
+    def soft_bank_swap(self, board=None):
+        if board is None: board = self.context_target
+        print("Soft bank swap", board)
+        self.start_operation(board, self.soft_bank_swap_gen(board))
 
     def start_write_from_generator(self, board):
         try:
@@ -158,12 +252,6 @@ class Bootloader(tkinter.Toplevel):
         self.boards[self.context_target]["operation"] = "program1"
         self.boards[self.context_target]["generator"] = self.generate_frames(self.config[self.context_target]["program"])
         self.send_command(self.boards[self.context_target]["bus"], self.context_target, b"\x55"*8)
-
-    def soft_bank_swap(self, board=None):
-        if board is None: board = self.context_target
-        print("Soft bank swap", board)
-        self.boards[board]["operation"] = "softswap"
-        self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
 
     def hard_bank_swap(self, board=None):
         if board is None: board = self.context_target
@@ -251,8 +339,22 @@ class Bootloader(tkinter.Toplevel):
                 "offset": 0,
                 "lastwrite": b"",
                 "generator": None,
-                "booted": True
+                "booted": True,
+                "op_generator": None
             }
+        self.boards[board]["last_packet"] = packet
+        if self.boards[board]["op_generator"] is not None:
+            try:
+                v = next(self.boards[board]["op_generator"])
+                if v is not None: self.txfunc( v)
+            except StopIteration:
+                print("Operation done")
+                self.boards[board]["op_generator"] = None
+            except BootloaderError as e:
+                self.boards[board]["op_generator"] = None
+                threading.Thread(target=tkinter.messagebox.showerror, args=("Bootloader error", str(e))).start()
+                print("Operation terminated due to error:", e)
+                
         elif packet["type"] == "status":
             self.boards[board]["booted"] = True
             self.boards[board]["elements"][2].set_value(packet["bootstate"])
@@ -265,9 +367,6 @@ class Bootloader(tkinter.Toplevel):
             elif self.boards[board]["operation"] == "program2":
                 self.boards[board]["operation"] = "write"
                 self.start_write_from_generator(board)
-            elif self.boards[board]["operation"] == "softswap":
-                print("Continuing with soft swap")
-                self.soft_bank_swap(board)
             elif self.boards[board]["operation"].startswith("hardswap"):
                 print("Continuing with hard swap")
                 self.hard_bank_swap(board)
@@ -307,6 +406,7 @@ class Bootloader(tkinter.Toplevel):
         self.destroy()
 
     def open_context_menu(self, event):
+        print("opening menu")
         tablepos = event.y_root - self.table.winfo_rooty()
         for board in self.boards:
             x, y, width, height = self.table.grid_bbox(0, self.boards[board]["index"]+1)
