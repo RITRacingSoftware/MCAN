@@ -12,6 +12,7 @@ import tkinter.font
 import mcan_dash
 import sources
 import bootloader
+import mcan_bootloader
 
 
 source_list = []
@@ -113,7 +114,8 @@ class MainWindow(tkinter.Tk):
 
         self.dash_targets = {}
         
-        rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.forward_boot)
+        self.boot_manager = bootloader.BootManager(transmit)
+        rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.boot_manager.onrecv)
         self.protocol("WM_DELETE_WINDOW", self.on_quit)
 
         self.ts = time.time()
@@ -131,12 +133,8 @@ class MainWindow(tkinter.Tk):
         if packet["id"] not in db._frame_id_to_message: return None, {}
         return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 
-    def forward_boot(self, packet):
-        if self.boot is not None and not self.boot.closed:
-            self.boot.onrecv(packet)
-
     def open_bootloader(self):
-        self.boot = bootloader.Bootloader(transmit)
+        self.boot = mcan_bootloader.BootloaderMenu(self.boot_manager)
 
     def dash_update(self, packet, target):
         if target not in self.dash_targets:
