@@ -24,7 +24,7 @@ class BootloaderMenu(tkinter.Toplevel):
         self.menubar = tkinter.Menu(self)
         self.cmdmenu = tkinter.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Commands", menu=self.cmdmenu)
-        self.cmdmenu.add_command(label="Boot all", command=self.boot_all)
+        self.cmdmenu.add_command(label="Boot all", command=self.boot_manager.boot_all)
         self.cmdmenu.add_command(label="Disable non-boot messages", command=self.boot_manager.txoff)
         self.cmdmenu.add_command(label="Disable C70", command=self.boot_manager.toggle_c70)
         self.config(menu=self.menubar)
@@ -83,10 +83,6 @@ class BootloaderMenu(tkinter.Toplevel):
         if board is None: board = self.context_target
         self.boot_manager.boot(board)
     
-    def boot_all(self):
-        self.boot_manager.send_command(1, 0x7ff, b"\x55"*8)
-        self.after(500, self.boot_manager.read_bank_identifiers)
-
     def soft_bank_swap(self, board=None):
         if board is None: board = self.context_target
         self.boot_manager.soft_bank_swap(board)
@@ -99,8 +95,9 @@ class BootloaderMenu(tkinter.Toplevel):
         if board is None: board = self.context_target
         self.boot_manager.reset(board)
     
-    def program(self):
-        print("Programming", self.context_target)
+    def program(self, board=None):
+        if board is None: board = self.context_target
+        self.boot_manager.program(board)
 
     def update_board_item(self, board):
         b = self.boot_manager.boards[board]

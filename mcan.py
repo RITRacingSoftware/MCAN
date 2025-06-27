@@ -15,10 +15,6 @@ import bootloader
 import mcan_bootloader
 
 
-source_list = []
-rxqueue = queue.Queue()
-filter_list = []
-
 can_db = {
     1: cantools.database.load_file("../Formula-DBC/sensor_dbc.dbc"),
     2: cantools.database.load_file("../Formula-DBC/main_dbc.dbc"),
@@ -46,34 +42,72 @@ class CANStream:
                 part = b[1](element)
                 if part is not None: b[2].apply(part)
 
-rxrootstream = CANStream()
-txrootstream = CANStream()
+class MCan:
+    def __init__(self):
+        self.rxrootstream = CANStream()
+        self.txrootstream = CANStream()
+        
+        self.boot_manager = bootloader.BootManager(self.transmit)
+        self.rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.boot_manager.onrecv)
 
-def source(s):
-    s.set_queue(rxqueue)
-    source_list.append(s)
+        self.total_packets = 0
+        self.last_packets = 0
+        self.total_bytes = 0
+        self.last_bytes = 0
+        self.last_time = 0
+        self.start_time = time.time()
 
-def start_sources():
-    for s in source_list: 
-        s.start()
+        self.source_list = []
 
-def stop_sources():
-    for s in source_list:
-        s.stop()
+    def close(self):
+        self.stop_sources()
+        self.boot_manager.close()
 
-def transmit(packet):
-    txrootstream.apply(packet)
+    def source(self, s):
+        s.rxrootstream = self.rxrootstream
+        self.source_list.append(s)
 
+    def start_sources(self):
+        for s in self.source_list: 
+            s.start()
 
-def dash(packet, target):
-    if window is not None: window.dash_update(packet, target)
+    def stop_sources(self):
+        for s in self.source_list:
+            s.stop()
+
+    def transmit(self, packet):
+        self.txrootstream.apply(packet)
+    
+    def onrecv(self, packet):
+        self.total_packets += 1
+        self.total_bytes += len(packet["data"])
+        self.rxrootstream.apply(packet)
+
+    def dump_stats(self):
+        t = time.time()
+        diff = t - self.last_time
+        stats = {
+            "total_packets": self.total_packets,
+            "total_bytes": self.total_bytes,
+            "packet_rate": (self.total_packets - self.last_packets)/diff,
+            "byte_rate": (self.total_bytes - self.last_bytes)/diff,
+            "total_time": t - self.start_time
+        }
+        self.last_time = t
+        self.last_packets = self.total_packets
+        self.last_bytes = self.total_bytes
+        for s in self.source_list:
+            if hasattr(s, "dump_stats"):
+                stats.update(**s.dump_stats())
+        return stats
 
 class MainWindow(tkinter.Tk):
-    def __init__(self):
+    def __init__(self, inst):
         super().__init__()
         self.title("MCAN v0.1")
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
+        self.inst = inst
         style = ttk.Style(self)
         style.configure("Treeview", font=("Ubuntu Mono", 10))
 
@@ -86,25 +120,16 @@ class MainWindow(tkinter.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.grid(row=0, column=0, sticky="news")
 
-        self.stats_table = tkinter.Frame(self)
+        self.stats_table = ttk.LabelFrame(self, text="Statistics")
         self.stats_table.grid(row=1, column=0, sticky="news")
 
-        self.stats = {
-            "total_packets": 0,
-            "last_packets": 0, 
-            "total_bytes": 0,
-            "last_bytes": 0,
-            "last_time": 0
-        }
-        tkinter.Label(self.stats_table, text="Total packets", font=(None, 10)).grid(row=0, column=0, sticky="w")
-        tkinter.Label(self.stats_table, text="Packet rate", font=(None, 10)).grid(row=0, column=2, sticky="w")
-        tkinter.Label(self.stats_table, text="Total bytes", font=(None, 10)).grid(row=1, column=0, sticky="w")
-        tkinter.Label(self.stats_table, text="Byte rate", font=(None, 10)).grid(row=1, column=2, sticky="w")
-        tkinter.Label(self.stats_table, text="Total time", font=(None, 10)).grid(row=2, column=0, sticky="w")
-        tkinter.Label(self.stats_table, text="Backlog", font=(None, 10)).grid(row=2, column=2, sticky="w")
-        self.stats_elements = [tkinter.Label(self.stats_table, font=(None, 10)) for x in range(6)]
-        for l, (r, c) in zip(self.stats_elements, [(0, 1), (0, 3), (1, 1), (1, 3), (2, 1), (2, 3)]):
-            l.grid(row=r, column=c, sticky="w")
+        self.stats_layout = [
+            [["total_packets", "Total packets", "{} packets"], ["packet_rate", "Packet rate", "{:.4f} packets/s"]],
+            [["total_bytes", "Total bytes", "{} B"], ["byte_rate", "Byte rate", "{:.4f} B/s"]],
+            [["total_time", "Total time", "{:.4f} s"], ["dash_backlog", "Backlog", "{} packets"]],
+            [["replay_backlog", "Replay backlog", "{:.4f}"]]
+        ]
+        self.stats_elements = []
         self.stats_table.grid_columnconfigure(1, weight=1, minsize=100)
         self.stats_table.grid_columnconfigure(3, weight=1, minsize=100)
 
@@ -113,19 +138,14 @@ class MainWindow(tkinter.Tk):
         self.boot = None
 
         self.dash_targets = {}
+        self.dash_queue = queue.Queue()
         
-        self.boot_manager = bootloader.BootManager(transmit)
-        rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.boot_manager.onrecv)
-        self.protocol("WM_DELETE_WINDOW", self.on_quit)
-
         self.ts = time.time()
-        self.update_stats()
 
-    def on_quit(self):
+    def close(self):
+        self.inst.close()
         for d in self.dash_targets:
             self.dash_targets[d].close()
-        stop_sources()
-        self.destroy()
 
     def can_decode(self, packet):
         if packet["bus"] not in can_db: return None, {}
@@ -134,48 +154,50 @@ class MainWindow(tkinter.Tk):
         return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 
     def open_bootloader(self):
-        self.boot = mcan_bootloader.BootloaderMenu(self.boot_manager)
+        self.boot = mcan_bootloader.BootloaderMenu(self.inst.boot_manager)
 
     def dash_update(self, packet, target):
-        if target not in self.dash_targets:
-            self.dash_targets[target] = mcan_dash.CANDashboard(self, target, self.can_decode)
-            self.notebook.add(self.dash_targets[target], text=target)
-        self.dash_targets[target].dash_update(packet)
+        self.dash_queue.put((packet, target))
 
     def update_elements(self):
         t0 = time.time()
         try:
             while True:
-                packet = rxqueue.get_nowait()
-                self.stats["total_packets"] += 1
-                self.stats["total_bytes"] += len(packet["data"])
-                rxrootstream.apply(packet)
+                packet, target = self.dash_queue.get_nowait()
+                if target not in self.dash_targets:
+                    self.dash_targets[target] = mcan_dash.CANDashboard(self, target, self.can_decode)
+                    self.notebook.add(self.dash_targets[target], text=target)
+                self.dash_targets[target].dash_update(packet)
         except queue.Empty: pass
         for d in self.dash_targets:
             self.dash_targets[d].update_elements()
         self.after(10, self.update_elements)
 
     def update_stats(self):
-        t = time.time()
-        diff = t - self.stats["last_time"]
-        self.stats["last_time"] = t
-        self.stats_elements[0]["text"] = "{} packets".format(self.stats["total_packets"])
-        self.stats_elements[1]["text"] = "{:.4f} packets/s".format((self.stats["total_packets"] - self.stats["last_packets"])/diff)
-        self.stats_elements[2]["text"] = "{} B".format(self.stats["total_bytes"])
-        self.stats_elements[3]["text"] = "{:.4f} B/s".format((self.stats["total_bytes"] - self.stats["last_bytes"])/diff)
-        self.stats_elements[4]["text"] = "{:.4f}".format(t - self.ts)
-        self.stats_elements[5]["text"] = "{} packets".format(rxqueue.qsize())
-        self.stats["last_packets"] = self.stats["total_packets"]
-        self.stats["last_bytes"] = self.stats["total_bytes"]
+        stat = self.inst.dump_stats()
+        stat["dash_backlog"] = self.dash_queue.qsize()
         self.after(500, self.update_stats)
+        if self.stats_elements == []:
+            for rn, r in enumerate(self.stats_layout):
+                row = []
+                if [x for x in r if x[0] in stat]:
+                    for cn, c in enumerate(r):
+                        row.append(tkinter.Label(self.stats_table, text="", font=(None, 10)))
+                        row[-1].grid(row=rn, column=2*cn+1, sticky="w")
+                        tkinter.Label(self.stats_table, text=self.stats_layout[rn][cn][1], font=(None, 10)).grid(row=rn, column=2*cn, sticky="w")
+                self.stats_elements.append(row)
 
+        for rn, r in enumerate(self.stats_layout):
+            if [x for x in r if x[0] in stat] == []: continue
+            for cn, c in enumerate(r):
+                self.stats_elements[rn][cn]["text"] = self.stats_layout[rn][cn][2].format(stat[self.stats_layout[rn][cn][0]])
 
-def mainloop():
-    global window
-    window = MainWindow()
-    start_sources()
-    window.update_elements()
-    try:
-        tkinter.mainloop()
-    finally:
-        stop_sources()
+    def mainloop(self):
+        self.inst.start_sources()
+        self.update_stats()
+        self.update_elements()
+        try:
+            tkinter.mainloop()
+        finally:
+            print("closing")
+            self.close()

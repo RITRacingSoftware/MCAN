@@ -9,13 +9,10 @@ import serial
 import zlib
 
 class RandomFrames:
-    def __init__(self):
-        self.q = None
+    def __init__(self, inst):
+        self.inst = inst
         self.running = True
         self.db = cantools.database.load_file("../Formula-DBC/main_dbc.dbc")
-
-    def set_queue(self, q):
-        self.q = q
 
     def start(self):
         self.running = True
@@ -40,15 +37,15 @@ class RandomFrames:
                         i += 1
                         if (i % 6) == 0:
                             packet["BMS_Voltages_mux"] = (i//6)-1
-                            self.q.put({"bus": 2, "id": 702, "data": self.db.encode_message(702, packet), "ts": time.time()*1000000, "fd": False})
+                            self.inst.onrecv({"bus": 2, "id": 702, "data": self.db.encode_message(702, packet), "ts": time.time()*1000000, "fd": False})
                             packet = {}
                 tb = t
             unpacked = {"TireTemp_FL_Max": tv, "TireTemp_FR_Max": tv, "TireTemp_RL_Max": tv, "TireTemp_RR_Max": tv}
             data = self.db.encode_message(1874, unpacked)
-            self.q.put({"bus": 2, "id": 1874, "data": data, "ts": time.time()*1000000, "fd": False})
+            self.inst.onrecv({"bus": 2, "id": 1874, "data": data, "ts": time.time()*1000000, "fd": False})
             time.sleep(0.02)
             data = self.db.encode_message(1875, {"RotorTemp_FL_Max": tv, "RotorTemp_FR_Max": tv, "RotorTemp_RL_Max": tv, "RotorTemp_RR_Max": tv})
-            self.q.put({"bus": 2, "id": 1875, "data": data, "ts": time.time()*1000000, "fd": False})
+            self.inst.onrecv({"bus": 2, "id": 1875, "data": data, "ts": time.time()*1000000, "fd": False})
             time.sleep(random.random()*0.03 + 0.085)
 
     def run_fast(self):
@@ -56,17 +53,17 @@ class RandomFrames:
         n = 0
         while self.running:
             t = time.time() - t0
-            self.q.put({"bus": 2, "id": 505, "data": self.db.encode_message(505, {
+            self.inst.onrecv({"bus": 2, "id": 505, "data": self.db.encode_message(505, {
                 "VectorNav_VelNedN": 100*math.cos(t),
                 "VectorNav_VelNedE": -100*math.sin(t),
             }), "ts": time.time()*1000000, "fd": False})
             time.sleep(0.005)
 
 class LoRATelemetry:
-    def __init__(self, port):
+    def __init__(self, inst, port):
         self.port = port
         self.running = True
-        self.q = None
+        self.inst = inst
 
     def start(self):
         self.s = serial.Serial(self.port, 115200)
@@ -81,9 +78,6 @@ class LoRATelemetry:
     def stop(self):
         self.running = False
         self.s.close()
-
-    def set_queue(self, q):
-        self.q = q
 
     def run(self):
         while self.running:
@@ -109,21 +103,19 @@ class LoRATelemetry:
                 while i < len(data):
                     bus, length, tsl, id, tsh = struct.unpack("<BBHHH", data[i:i+8])
                     packet = {"bus": bus, "id": id, "data": data[i+8:i+8+(length&0x7f)], "ts": tsl | (tsh << 16), "fd": length>>7}
-                    self.q.put(packet)
+                    self.inst.onrecv(packet)
                     i += (length & 0x7f)+8
 
 
 class Replay:
-    def __init__(self, fname, bus, scale=1):
+    def __init__(self, inst, fname, bus, scale=1):
         self.fname = fname
         self.bus = bus
         self.scale = scale
-        self.q = None
+        self.inst = inst
+        self.backlog = 0
         self.running = True
     
-    def set_queue(self, q):
-        self.q = q
-
     def start(self):
         self.running = True
         threading.Thread(target=self.run).start()
@@ -150,6 +142,7 @@ class Replay:
                 data = f.read(length)
                 if offset_ready:
                     t = (time.time() - t0)/self.scale + ts0
+                    self.backlog = t - ts
                     if t < ts: time.sleep(self.scale*(ts - t))
                 else:
                     ts0 = ts
@@ -162,18 +155,18 @@ class Replay:
                     "data": data[8:],
                     "bus": self.bus
                 }
-                self.q.put(packet)
+                self.inst.onrecv(packet)
+    
+    def dump_stats(self):
+        return {"replay_backlog": self.backlog}
 
 class MCAN_Ethernet:
-    def __init__(self, ip, port):
+    def __init__(self, inst, ip, port):
         self.ip = ip
         self.port = port
-        self.q = None
+        self.inst = inst
         self.socket = None
         self.running = True
-
-    def set_queue(self, q):
-        self.q = q
     
     def start(self):
         self.running = True
@@ -201,11 +194,11 @@ class MCAN_Ethernet:
                         offset = msb
                 else:
                     packet = {"bus": bus, "id": id, "data": frame[i+8:i+8+(length&0x7f)], "ts": ts+msb-offset, "fd": length>>7}
-                    self.q.put(packet)
+                    self.inst.onrecv(packet)
                 i += (length & 0x7f)+8
 
     def transmit(self, packet):
-        print("transmit", packet)
+        #print("transmit", packet)
         frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), 0, packet["id"])+packet["data"]
         self.socket.sendto(frame, (self.ip, self.port))
 

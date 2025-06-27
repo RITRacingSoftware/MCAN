@@ -1,5 +1,8 @@
 {
     "4": {
         "program": "/home/matthias/racing/core-sd-test/build/stm32/datalogger-f33.ihex"
+    },
+    "1": {
+        "program": "/home/matthias/racing/core-ssdb/build_rear/stm32/RSSDB-f33.ihex"
     }
 }

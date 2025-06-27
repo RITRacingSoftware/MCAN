@@ -3,6 +3,9 @@ import json
 import os.path
 import collections
 import threading
+import time
+import os
+import select
 
 import mcan_utils
 
@@ -45,6 +48,24 @@ class BootManager:
         self.on_board_added = lambda *args: None
         self.on_error = lambda *args: None
 
+        self.timeouts = {}
+
+        self.abortpipe_r, self.abortpipe_w = os.pipe()
+        self.timeout_thread = threading.Thread(target=self.check_timeouts)
+        self.timeout_thread.start()
+
+    def check_timeouts(self):
+        while True:
+            t = time.time()
+            tv = list(self.timeouts.keys())
+            for x in tv:
+                if t >= self.timeouts[x][0]:
+                    self.timeouts[x][1](x)
+                    del self.timeouts[x]
+            rlist, wlist, xlist = select.select([self.abortpipe_r], [], [], 0.1)
+            if rlist: break
+        os.close(self.abortpipe_r)
+
     def txoff(self):
         pass
 
@@ -70,6 +91,9 @@ class BootManager:
     
     def make_read(self, bus, id, address, length, bankmode):
         return {"bus": bus, "data": struct.pack("<BB", length, bankmode), "id": (1<<30) | (id<<18) | address | (1<<17) | (1<<16), "fd": True}
+    
+    def make_write(self, bus, id, address, data):
+        return {"bus": bus, "data": data, "id": (1<<30) | (id<<18) | address | (1<<17), "fd": True}
 
     def boot_all(self):
         for r in self.boards:
@@ -129,49 +153,39 @@ class BootManager:
     def hard_bank_swap_gen(self, board):
         bus = self.boards[board]["bus"]
         yield from self.soft_bank_swap_gen(board)
+        yield from self.boot_gen(board)
+        yield self.make_command(bus, board, b"\x02")
+        packet = self.boards[board]["last_packet"]
+        if packet["status"] != BOOT_STATUS_OK:
+            raise BootloaderError("Board returned status {}".format(packet["status"]))
+        if packet["bootstate"] != BOOT_STATE_KEY | BOOT_STATE_VERIFIED:
+            raise BootloaderError("Board in invalid state after verify: {:08x}".format(packet["bootstate"]))
+        yield self.make_command(bus, board, b"\x03")
 
     def reset_gen(self, board):
         bus = self.boards[board]["bus"]
         yield self.make_command(bus, board, b"\x00")
         print("Reset completed")
 
-
-
-    #######################################################
-    # Operations
-    #######################################################
-
-    def boot(self, board):
-        self.start_operation(board, self.boot_gen(board))
-
-    def read_bank_identifiers(self):
-        for board in self.boards:
-            print("Reading bank identifiers", board)
-            self.start_operation(board, self.read_bank_identifiers_gen(board))
-
-    def soft_bank_swap(self, board):
-        print("Soft bank swap", board)
-        self.start_operation(board, self.soft_bank_swap_gen(board))
-
-    def reset(self, board):
-        print("Resetting", board)
-        self.start_operation(board, self.reset_gen(board))
-
-    def start_write_from_generator(self, board):
-        try:
-            address, data = next(self.boards[board]["generator"])
-        except StopIteration:
-            self.hard_bank_swap(board)
-            return
-        self.boards[board]["offset"] = address
-        self.boards[board]["lastwrite"] = data
+    def write_and_verify_gen(self, board, address, data):
         l = len(data)
         if l >= 32 and l&8:
+            data += b"\xff"*8
             address |= (1<<15)
-            l += 8
-        self.txfunc({"bus": self.boards[board]["bus"], "data": data, "id": (1<<30) | (board<<18) | address | (1<<17), "fd": True})
+        packet = self.make_write(self.boards[board]["bus"], board, address, data)
+        yield packet
+        packet = self.boards[board]["last_packet"]
+        if packet["type"] != "data":
+            raise BootloaderError("Failed to verify write: no data packet received")
+        recv = packet["data"]
+        if recv[:l] != data[:l]:
+            print("ERROR")
+            print("    "+"".join(hex(x)[2:].rjust(2, "0") for x in data[:l]))
+            print("    "+"".join(hex(x)[2:].rjust(2, "0") for x in recv[:l]))
+            raise BootloaderError("Failed to verify write: incorrect data")
 
-    def generate_frames(self, fname):
+
+    def write_and_verify_from_file_gen(self, board, fname):
         """Generate FDCAN frames from an IHEX file"""
         base_address = 0
         dwords = {}
@@ -203,22 +217,52 @@ class BootManager:
                     buf += bytearray([255]*(a - start_address - len(buf)))
                     buf += dwords[a]
                 else:
-                    yield (start_address - 0x08000000)>>3, buf
+                    yield from self.write_and_verify_gen(board, (start_address - 0x08000000)>>3, buf)
                     start_address = a
                     buf = dwords[a]
 
                 if len(buf) == 64:
-                    yield (start_address - 0x08000000)>>3, buf
+                    yield from self.write_and_verify_gen(board, (start_address - 0x08000000)>>3, buf)
                     buf = bytearray([])
                 print("\rWritten {}/{} doublewords".format(i+1, len(dword_addresses)), end="")
             if buf:
-                yield (start_address - 0x08000000)>>3, buf
+                yield from self.write_and_verify_gen(board, (start_address - 0x08000000)>>3, buf)
+        print()
+    
+    def program_gen(self, board):
+        print("program_gen", board)
+        yield from self.boot_gen(board)
+        yield from self.write_and_verify_from_file_gen(board, self.config[board]["program"])
+        yield from self.hard_bank_swap_gen(board)
 
-    def program(self):
-        print("Programming", self.context_target)
-        self.boards[self.context_target]["operation"] = "program1"
-        self.boards[self.context_target]["generator"] = self.generate_frames(self.config[self.context_target]["program"])
-        self.send_command(self.boards[self.context_target]["bus"], self.context_target, b"\x55"*8)
+
+    #######################################################
+    # Operations
+    #######################################################
+
+    def boot(self, board):
+        self.start_operation(board, self.boot_gen(board))
+
+    def boot_all(self):
+        self.send_command(1, 0x7ff, b"\x55"*8)
+        self.timeouts["boot_all"] = (time.time() + 0.5, lambda *args: self.read_bank_identifiers())
+
+    def read_bank_identifiers(self):
+        for board in self.boards:
+            print("Reading bank identifiers", board)
+            self.start_operation(board, self.read_bank_identifiers_gen(board))
+
+    def soft_bank_swap(self, board):
+        print("Soft bank swap", board)
+        self.start_operation(board, self.soft_bank_swap_gen(board))
+
+    def reset(self, board):
+        print("Resetting", board)
+        self.start_operation(board, self.reset_gen(board))
+
+    def program(self, board):
+        print("Programming", board)
+        self.start_operation(board, self.program_gen(board))
 
     def hard_bank_swap(self, board=None):
         if board is None: board = self.context_target
@@ -245,6 +289,11 @@ class BootManager:
         else:
             self.boards[board]["operation"] = "hardswap1"
             self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
+
+
+    #######################################################
+    # Internal functions
+    #######################################################
 
     def parse_response(self, packet, print_response=False):
         packet["board"] = (packet["id"]>>18) & 0x7f
@@ -324,4 +373,8 @@ class BootManager:
                     self.boards[board]["operation"] = ""
                 else:
                     self.start_write_from_generator(board)
+
+    def close(self):
+        os.write(self.abortpipe_w, b"x")
+        os.close(self.abortpipe_w)
 
