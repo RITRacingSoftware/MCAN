@@ -7,6 +7,8 @@ import socket
 import struct
 import serial
 import zlib
+import select
+import os
 
 class RandomFrames:
     def __init__(self, inst):
@@ -167,15 +169,20 @@ class MCAN_Ethernet:
         self.inst = inst
         self.socket = None
         self.running = True
+        self.abortpipe_r = None
+        self.abortpipe_w = None
     
     def start(self):
-        self.running = True
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('0.0.0.0', 40000))
+        self.socket.setblocking(0)
+        self.abortpipe_r, self.abortpipe_w = os.pipe()
         threading.Thread(target=self.run).start()
 
     def stop(self):
         self.running = False
+        os.write(self.abortpipe_w, b"x")
+        os.close(self.abortpipe_w)
         self.socket.close()
 
     def run(self):
@@ -183,19 +190,26 @@ class MCAN_Ethernet:
         offset = 0
         msb_loaded = False
         while self.running:
+            rlist, wlist, xlist = select.select([self.socket, self.abortpipe_r], [], [])
+            if self.abortpipe_r in rlist: break
             frame = self.socket.recv(1500)
             i = 0
             while i < len(frame):
                 bus, length, ts, id = struct.unpack("<BBHI", frame[i:i+8])
                 if bus == 4:
-                    msb = struct.unpack("<I", frame[i+8:i+12])[0]<<16
-                    if not msb_loaded:
+                    newmsb = struct.unpack("<I", frame[i+8:i+12])[0]<<16
+                    if newmsb < msb:
+                        print("Warning: backwards jump in timestamp packet ({} to {})".format(msb>>16, newmsb>>16))
+                        offset = newmsb - (msb - offset)
+                    elif not msb_loaded:
                         msb_loaded = True
-                        offset = msb
+                        offset = newmsb
+                    msb = newmsb
                 else:
                     packet = {"bus": bus, "id": id, "data": frame[i+8:i+8+(length&0x7f)], "ts": ts+msb-offset, "fd": length>>7}
                     self.inst.onrecv(packet)
                 i += (length & 0x7f)+8
+        os.close(self.abortpipe_r)
 
     def transmit(self, packet):
         #print("transmit", packet)
