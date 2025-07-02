@@ -39,14 +39,25 @@ class BootManager:
         self.txfunc = txfunc
         self.boards = {}
 
-        with open("config.json") as f:
-            self.config = {int(x) : y for x, y in json.load(f).items()}
-
-        self.c70_state = False
-
         self.on_board_state_change = lambda *args: None
         self.on_board_added = lambda *args: None
         self.on_error = lambda *args: None
+
+        with open("config.json") as f:
+            self.config = {int(x) : y for x, y in json.load(f).items()}
+        for board in self.config:
+            self.boards[board] = {
+                "index": len(self.boards),
+                "bus": 0,
+                "bankstatus": 0,
+                "bootstate": 0,
+                "offset": 0,
+                "lastwrite": b"",
+                "booted": True,
+                "op_generator": None
+            }
+
+        self.c70_state = False
 
         self.timeouts = {}
 
@@ -60,22 +71,23 @@ class BootManager:
             tv = list(self.timeouts.keys())
             for x in tv:
                 if t >= self.timeouts[x][0]:
-                    self.timeouts[x][1](x)
+                    func = self.timeouts[x][1]
                     del self.timeouts[x]
+                    func(x)
             rlist, wlist, xlist = select.select([self.abortpipe_r], [], [], 0.1)
             if rlist: break
         os.close(self.abortpipe_r)
 
-    def txoff(self):
-        pass
+    def txctl(self, enabled):
+        print("txctl", enabled)
+        self.txfunc({"bus": 5, "data": b"\x01" if enabled else b"\x00", "id": 0, "fd": False})
+        self.timeouts["txctl"] = (time.time() + 0.5, lambda *args: self.txctl(enabled))
 
-    def toggle_c70(self):
-        self.c70_state = not self.c70_state
-        #self.txfunc({"bus": 2, "data": struct.pack("<B", int(self.c70_state))+b"\x00\x00\x00\x00\x00\x00\x00", "id": 1793, "fd": False})
-        if self.c70_state:
-            self.txfunc({"bus": 2, "data": b"\xff"*8, "id": 1793, "fd": False})
-        else:
+    def c70ctl(self, enabled):
+        if enabled:
             self.txfunc({"bus": 2, "data": b"\x00"*8, "id": 1793, "fd": False})
+        else:
+            self.txfunc({"bus": 2, "data": b"\xff"*8, "id": 1793, "fd": False})
 
     def simulate_state(self):
         self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x01\x00\x00\xC0\xef\xcd\xab', 'ts': 63604, 'fd': 1})
@@ -86,20 +98,11 @@ class BootManager:
     def make_command(self, bus, id, data):
         return {"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True}
 
-    def start_read(self, bus, id, address, length, bankmode):
-        self.txfunc({"bus": bus, "data": struct.pack("<BB", length, bankmode), "id": (1<<30) | (id<<18) | address | (1<<17) | (1<<16), "fd": True})
-    
     def make_read(self, bus, id, address, length, bankmode):
         return {"bus": bus, "data": struct.pack("<BB", length, bankmode), "id": (1<<30) | (id<<18) | address | (1<<17) | (1<<16), "fd": True}
     
     def make_write(self, bus, id, address, data):
         return {"bus": bus, "data": data, "id": (1<<30) | (id<<18) | address | (1<<17), "fd": True}
-
-    def boot_all(self):
-        for r in self.boards:
-            self.boards[r]["operation"] = ""
-        self.send_command(1, 0x7ff, b"\x55"*8)
-        self.after(500, self.read_bank_identifiers)
 
     def start_operation(self, board, gen):
         self.boards[board]["op_generator"] = gen
@@ -256,6 +259,10 @@ class BootManager:
         print("Soft bank swap", board)
         self.start_operation(board, self.soft_bank_swap_gen(board))
 
+    def hard_bank_swap(self, board):
+        print("Hard bank swap", board)
+        self.start_operation(board, self.hard_bank_swap_gen(board))
+
     def reset(self, board):
         print("Resetting", board)
         self.start_operation(board, self.reset_gen(board))
@@ -263,32 +270,6 @@ class BootManager:
     def program(self, board):
         print("Programming", board)
         self.start_operation(board, self.program_gen(board))
-
-    def hard_bank_swap(self, board=None):
-        if board is None: board = self.context_target
-        print("Full swap", board)
-        if self.boards[board]["operation"] == "hardswap1":
-            self.boards[board]["operation"] = "hardswap2"
-            print("Hard swap: switching to NB bank")
-            self.send_command(self.boards[board]["bus"], board, b"\x01")
-        elif self.boards[board]["operation"] == "hardswap2":
-            print("Hard swap: Entering NB bootloader")
-            self.boards[board]["operation"] = "hardswap3"
-            self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
-        elif self.boards[board]["operation"] == "hardswap3":
-            print("Hard swap: NB boot reset")
-            self.boards[board]["operation"] = "hardswap4"
-        elif self.boards[board]["operation"] == "hardswap4":
-            print("Hard swap: Verifying")
-            self.boards[board]["operation"] = "hardswap5"
-            self.send_command(self.boards[board]["bus"], board, b"\x02")
-        elif self.boards[board]["operation"] == "hardswap5":
-            print("Hard swap: finalizing")
-            self.boards[board]["operation"] = ""
-            self.send_command(self.boards[board]["bus"], board, b"\x03")
-        else:
-            self.boards[board]["operation"] = "hardswap1"
-            self.send_command(self.boards[board]["bus"], board, b"\x55"*8)
 
 
     #######################################################
@@ -323,11 +304,8 @@ class BootManager:
                 "bus": packet["bus"],
                 "bankstatus": packet["bankstatus"],
                 "bootstate": packet["bootstate"],
-                "operation": "",
-                "ops": collections.deque(),
                 "offset": 0,
                 "lastwrite": b"",
-                "generator": None,
                 "booted": True,
                 "op_generator": None
             }
@@ -336,7 +314,7 @@ class BootManager:
         if self.boards[board]["op_generator"] is not None:
             try:
                 v = next(self.boards[board]["op_generator"])
-                if v is not None: self.txfunc( v)
+                if v is not None: self.txfunc(v)
             except StopIteration:
                 print("Operation done")
                 self.boards[board]["op_generator"] = None
@@ -344,35 +322,15 @@ class BootManager:
                 self.boards[board]["op_generator"] = None
                 self.on_error(e)
                 print("Operation terminated due to error:", e)
+
+        if packet["bus"] == 5 and packet["id"] == 0 and "txctl" in self.timeouts:
+            del self.timeouts["txctl"]
                 
         elif packet["type"] == "status":
             self.boards[board]["booted"] = True
             self.boards[board]["bootstate"] = packet["bootstate"]
             self.boards[board]["bankstatus"] = packet["bankstatus"]
             self.on_board_state_change(board)
-            # Status message after reset
-            if self.boards[board]["operation"] == "program1":
-                self.boards[board]["operation"] = "program2"
-            # Board has entered bootloader and is ready to receive data
-            elif self.boards[board]["operation"] == "program2":
-                self.boards[board]["operation"] = "write"
-                self.start_write_from_generator(board)
-            elif self.boards[board]["operation"].startswith("hardswap"):
-                print("Continuing with hard swap")
-                self.hard_bank_swap(board)
-
-        elif packet["type"] == "data":
-            if self.boards[board]["operation"] == "write":
-                readback = packet["data"]
-                if packet["id"] & (1<<15): readback = readback[:-8]
-                if self.boards[board]["offset"] != packet["id"]&0x7fff:
-                    print("ERROR: Incorrect address received ({}, should be {})".format(packet["id"]&0x7fff, self.boards[board]["offset"]))
-                    self.boards[board]["operation"] = ""
-                elif self.boards[board]["lastwrite"] != readback:
-                    print("ERROR: Incorrect data read back")
-                    self.boards[board]["operation"] = ""
-                else:
-                    self.start_write_from_generator(board)
 
     def close(self):
         os.write(self.abortpipe_w, b"x")

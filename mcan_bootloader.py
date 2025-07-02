@@ -25,8 +25,10 @@ class BootloaderMenu(tkinter.Toplevel):
         self.cmdmenu = tkinter.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Commands", menu=self.cmdmenu)
         self.cmdmenu.add_command(label="Boot all", command=self.boot_manager.boot_all)
-        self.cmdmenu.add_command(label="Disable non-boot messages", command=self.boot_manager.txoff)
-        self.cmdmenu.add_command(label="Disable C70", command=self.boot_manager.toggle_c70)
+        self.cmdmenu.add_command(label="Disable non-boot messages", command=lambda: self.boot_manager.txctl(0))
+        self.cmdmenu.add_command(label="Enable non-boot messages", command=lambda: self.boot_manager.txctl(1))
+        self.cmdmenu.add_command(label="Disable C70", command=lambda: self.boot_manager.c70ctl(0))
+        self.cmdmenu.add_command(label="Enable C70", command=lambda: self.boot_manager.c70ctl(1))
         self.config(menu=self.menubar)
         
         self.table = ttk.LabelFrame(self, text="Boards")
@@ -71,6 +73,9 @@ class BootloaderMenu(tkinter.Toplevel):
         self.boot_manager.on_board_state_change = self.update_board_item
         self.boot_manager.on_board_added = self.insert_board_item
         self.boot_manager.on_error = self.on_error
+
+        for b in self.boot_manager.boards:
+            self.insert_board_item(b)
 
         self.protocol("WM_DELETE_WINDOW", self.on_quit)
 
