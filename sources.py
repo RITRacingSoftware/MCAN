@@ -163,7 +163,7 @@ class Replay:
         return {"replay_backlog": self.backlog}
 
 class MCAN_Ethernet:
-    def __init__(self, inst, ip, port):
+    def __init__(self, inst, ip, port, tcp=False):
         self.ip = ip
         self.port = port
         self.inst = inst
@@ -171,10 +171,15 @@ class MCAN_Ethernet:
         self.running = True
         self.abortpipe_r = None
         self.abortpipe_w = None
+        self.tcp = tcp
     
     def start(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind(('0.0.0.0', 40000))
+        if self.tcp:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.connect((self.ip, self.port))
+        else:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.socket.bind(('0.0.0.0', 40000))
         self.socket.setblocking(0)
         self.abortpipe_r, self.abortpipe_w = os.pipe()
         threading.Thread(target=self.run).start()
@@ -189,12 +194,16 @@ class MCAN_Ethernet:
         msb = 0
         offset = 0
         msb_loaded = False
+        frame = b""
         while self.running:
             rlist, wlist, xlist = select.select([self.socket, self.abortpipe_r], [], [])
             if self.abortpipe_r in rlist: break
-            frame = self.socket.recv(1500)
+            frame += self.socket.recv(1500)
+            if len(frame) == 0:
+                print("Socket closed!")
+                return
             i = 0
-            while i < len(frame):
+            while i+1 < len(frame) and i+(frame[i+1]&0x7f)+8 <= len(frame):
                 bus, length, ts, id = struct.unpack("<BBHI", frame[i:i+8])
                 if bus == 4:
                     newmsb = struct.unpack("<I", frame[i+8:i+12])[0]<<16
@@ -209,6 +218,7 @@ class MCAN_Ethernet:
                     packet = {"bus": bus, "id": id, "data": frame[i+8:i+8+(length&0x7f)], "ts": ts+msb-offset, "fd": length>>7}
                     self.inst.onrecv(packet)
                 i += (length & 0x7f)+8
+            frame = frame[i:]
         os.close(self.abortpipe_r)
 
     def transmit(self, packet):
