@@ -82,6 +82,16 @@ class MCan:
         self.total_packets += 1
         self.total_bytes += len(packet["data"])
         self.rxrootstream.apply(packet)
+    
+    def can_decode(self, packet, **kwargs):
+        if packet["bus"] not in can_db: return None, {}
+        db = can_db[packet["bus"]]
+        if packet["id"] not in db._frame_id_to_message: return None, {}
+        try:
+            packet["message"] = db.get_message_by_frame_id(packet["id"])
+            packet["decoded"] = db.decode_message(packet["id"], packet["data"], **kwargs)
+        except:
+            pass
 
     def dump_stats(self):
         t = time.time()
