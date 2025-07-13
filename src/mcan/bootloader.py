@@ -7,7 +7,7 @@ import time
 import os
 import select
 
-import mcan_utils
+from mcan import mcan_utils
 
 BOOT_STATE_KEY =          0xABCDEF00
 BOOT_STATE_NORMAL =             0x00

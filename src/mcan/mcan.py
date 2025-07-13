@@ -9,11 +9,7 @@ import tkinter
 from tkinter import ttk
 import tkinter.font
 
-import mcan_dash
-import sources
-import bootloader
-import mcan_bootloader
-
+from mcan import mcan_dash, sources, bootloader, mcan_bootloader
 
 can_db = {
     1: cantools.database.load_file("../Formula-DBC/sensor_dbc.dbc"),

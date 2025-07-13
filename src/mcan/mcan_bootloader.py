@@ -7,8 +7,8 @@ import os.path
 import collections
 import threading
 
-import mcan_utils
-import bootloader
+from mcan import mcan_utils
+from mcan import bootloader
 
 class BootloaderMenu(tkinter.Toplevel):
     def __init__(self, boot_manager):
