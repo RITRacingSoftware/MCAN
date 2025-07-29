@@ -61,7 +61,7 @@ class BootManager:
 
         self.timeouts = {}
 
-        self.abortpipe_r, self.abortpipe_w = os.pipe()
+        self.event = threading.Event()
         self.timeout_thread = threading.Thread(target=self.check_timeouts)
         self.timeout_thread.start()
 
@@ -74,9 +74,7 @@ class BootManager:
                     func = self.timeouts[x][1]
                     del self.timeouts[x]
                     func(x)
-            rlist, wlist, xlist = select.select([self.abortpipe_r], [], [], 0.1)
-            if rlist: break
-        os.close(self.abortpipe_r)
+            if self.event.wait(0.1): break
 
     def txctl(self, enabled):
         print("txctl", enabled)
@@ -333,6 +331,6 @@ class BootManager:
             self.on_board_state_change(board)
 
     def close(self):
-        os.write(self.abortpipe_w, b"x")
-        os.close(self.abortpipe_w)
+        self.event.set()
+        self.timeout_thread.join()
 

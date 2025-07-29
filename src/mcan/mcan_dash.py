@@ -37,8 +37,11 @@ class CANDashboard(tkinter.Frame):
         self.dash_changes = {}
         self.can_decode = can_db
         
-        self.pcapfile = open("/tmp/log{}.pcap".format(name), "wb")
-        self.pcapfile.write(b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\x00\xe3\x00\x00\x00")
+        try:
+            self.pcapfile = open("/tmp/log{}.pcap".format(name), "wb")
+            self.pcapfile.write(b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\x00\xe3\x00\x00\x00")
+        except:
+            self.pcapfile = None
 
     def apply_packet(self, packet, dec, tree, el):
         if not el["signals"]:
@@ -138,5 +141,6 @@ class CANDashboard(tkinter.Frame):
             self.update_element(el)
 
     def close(self):
-        self.pcapfile.close()
-        self.pcapfile = None
+        if self.pcapfile is not None:
+            self.pcapfile.close()
+            self.pcapfile = None

@@ -9,6 +9,7 @@ import serial
 import zlib
 import select
 import os
+import sys
 
 class RandomFrames:
     def __init__(self, inst):
@@ -181,13 +182,15 @@ class MCAN_Ethernet:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.socket.bind(('0.0.0.0', 40000))
         self.socket.setblocking(0)
-        self.abortpipe_r, self.abortpipe_w = os.pipe()
+        if sys.platform == "linux":
+            self.abortpipe_r, self.abortpipe_w = os.pipe()
         threading.Thread(target=self.run).start()
 
     def stop(self):
         self.running = False
-        os.write(self.abortpipe_w, b"x")
-        os.close(self.abortpipe_w)
+        if self.abortpipe_w is not None:
+            os.write(self.abortpipe_w, b"x")
+            os.close(self.abortpipe_w)
         self.socket.close()
 
     def run(self):
@@ -196,7 +199,10 @@ class MCAN_Ethernet:
         msb_loaded = False
         frame = b""
         while self.running:
-            rlist, wlist, xlist = select.select([self.socket, self.abortpipe_r], [], [])
+            if self.abortpipe_r is not None:
+                rlist, wlist, xlist = select.select([self.socket, self.abortpipe_r], [], [])
+            else:
+                rlist, wlist, xlist = select.select([self.socket], [], [])
             if self.abortpipe_r in rlist: break
             frame += self.socket.recv(1500)
             if len(frame) == 0:
@@ -219,7 +225,7 @@ class MCAN_Ethernet:
                     self.inst.onrecv(packet)
                 i += (length & 0x7f)+8
             frame = frame[i:]
-        os.close(self.abortpipe_r)
+        if self.abortpipe_r is not None: os.close(self.abortpipe_r)
 
     def transmit(self, packet):
         #print("transmit", packet)

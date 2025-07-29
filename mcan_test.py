@@ -1,16 +1,15 @@
 import sys
 import mcan
-import sources
 
 m = mcan.MCan()
 win = mcan.MainWindow(m)
 
-ethernet = sources.MCAN_Ethernet(m, "192.168.72.100", 5001)
+ethernet = mcan.sources.MCAN_Ethernet(m, "192.168.72.100", 5001)
 m.source(ethernet)
 
-#m.source(sources.Replay(m, "inputs/loginverter.pcap", 3, 1))
-#m.source(sources.Replay(m, "inputs/logsensor.pcap", 1, 1))
-#m.source(sources.Replay(m, "inputs/logmain.pcap", 2, 1))
+#m.source(mcan.sources.Replay(m, "inputs/loginverter.pcap", 3, 1))
+#m.source(mcan.sources.Replay(m, "inputs/logsensor.pcap", 1, 1))
+#m.source(mcan.sources.Replay(m, "inputs/logmain.pcap", 2, 1))
 
 #mcan.source(sources.LoRATelemetry("/dev/ttyUSB0"))
 
