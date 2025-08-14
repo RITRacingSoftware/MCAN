@@ -4,18 +4,14 @@ import os
 import cantools
 import queue
 import time
+import os.path
 
 import tkinter
 from tkinter import ttk
 import tkinter.font
 
-from mcan import mcan_dash, sources, bootloader, mcan_bootloader
+from mcan import mcan_dash, sources, bootloader, mcan_bootloader, __version__
 
-can_db = {
-    1: cantools.database.load_file("../Formula-DBC/sensor_dbc.dbc"),
-    2: cantools.database.load_file("../Formula-DBC/main_dbc.dbc"),
-    3: cantools.database.load_file("../Formula-DBC/inverter_dbc.dbc")
-}
 
 
 class CANStream:
@@ -54,6 +50,10 @@ class MCan:
         self.start_time = time.time()
 
         self.source_list = []
+        self.can_db = {}
+
+    def load_file(self, bus, fname):
+        self.can_db[bus] = cantools.database.load_file(fname)
 
     def close(self):
         self.stop_sources()
@@ -80,9 +80,9 @@ class MCan:
         self.rxrootstream.apply(packet)
     
     def can_decode(self, packet, **kwargs):
-        if packet["bus"] not in can_db: return None, {}
-        db = can_db[packet["bus"]]
-        if packet["id"] not in db._frame_id_to_message: return None, {}
+        if packet["bus"] not in self.can_db: return
+        db = self.can_db[packet["bus"]]
+        if packet["id"] not in db._frame_id_to_message: return
         try:
             packet["message"] = db.get_message_by_frame_id(packet["id"])
             packet["decoded"] = db.decode_message(packet["id"], packet["data"], **kwargs)
@@ -110,7 +110,7 @@ class MCan:
 class MainWindow(tkinter.Tk):
     def __init__(self, inst):
         super().__init__()
-        self.title("MCAN v0.1")
+        self.title("MCAN " + __version__)
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
         self.inst = inst
@@ -154,8 +154,8 @@ class MainWindow(tkinter.Tk):
             self.dash_targets[d].close()
 
     def can_decode(self, packet):
-        if packet["bus"] not in can_db: return None, {}
-        db = can_db[packet["bus"]]
+        if packet["bus"] not in self.inst.can_db: return None, {}
+        db = self.inst.can_db[packet["bus"]]
         if packet["id"] not in db._frame_id_to_message: return None, {}
         return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
 

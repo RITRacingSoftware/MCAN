@@ -20,3 +20,6 @@ repository = "https://github.com/RITRacingSoftware/MCAN"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.dynamic]
+version = {attr = "mcan.__version__"}
+
