@@ -163,6 +163,14 @@ class Replay:
     def dump_stats(self):
         return {"replay_backlog": self.backlog}
 
+    def dump(self):
+        return {
+            "type": "replay",
+            "fname": self.fname,
+            "bus": self.bus,
+            "scale": self.scale
+        }
+
 class MCAN_Ethernet:
     def __init__(self, inst, ip, port, tcp=False):
         self.ip = ip
@@ -231,5 +239,19 @@ class MCAN_Ethernet:
         #print("transmit", packet)
         frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), 0, packet["id"])+packet["data"]
         self.socket.sendto(frame, (self.ip, self.port))
+
+    def dump(self):
+        return {
+            "type": "ip",
+            "tcp": self.tcp,
+            "ip": self.ip,
+            "port": self.port
+        }
+
+
+def construct(inst, type, **kwargs):
+    cls = {"ip": MCAN_Ethernet, "replay": Replay}.get(type, None)
+    if cls is None: return
+    return cls(inst, **kwargs)
 
 

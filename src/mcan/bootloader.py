@@ -6,6 +6,7 @@ import threading
 import time
 import os
 import select
+import socket
 
 from mcan import mcan_utils
 
@@ -35,26 +36,30 @@ class BootloaderError(Exception):
     pass
 
 class BootManager:
-    def __init__(self, txfunc):
-        self.txfunc = txfunc
+    def __init__(self, inst):
+        self.inst = inst
         self.boards = {}
 
         self.on_board_state_change = lambda *args: None
         self.on_board_added = lambda *args: None
         self.on_error = lambda *args: None
 
-        with open("config.json") as f:
-            self.config = {int(x) : y for x, y in json.load(f).items()}
-        for board in self.config:
-            self.boards[board] = {
+        cboards = []
+        try:
+            with open(os.path.join(self.inst.config_dir, "boards.json")) as f:
+                cboards = json.load(f)
+        except FileNotFoundError: pass
+        for cb in cboards:
+            self.boards[cb["id"]] = {
                 "index": len(self.boards),
-                "bus": 0,
+                "bus": cb.get("bus", 0),
                 "bankstatus": 0,
                 "bootstate": 0,
                 "offset": 0,
                 "lastwrite": b"",
-                "booted": True,
-                "op_generator": None
+                "booted": False,
+                "op_generator": None,
+                "config": cb
             }
 
         self.c70_state = False
@@ -64,6 +69,11 @@ class BootManager:
         self.event = threading.Event()
         self.timeout_thread = threading.Thread(target=self.check_timeouts)
         self.timeout_thread.start()
+
+        self.server_socket = None
+        self.clinet_sockets = []
+        self.server_thread = threading.Thread(target=self.run_server);
+        self.server_thread.start()
 
     def check_timeouts(self):
         while True:
@@ -76,22 +86,84 @@ class BootManager:
                     func(x)
             if self.event.wait(0.1): break
 
+    def receive_from_client(self, sock):
+        print("handling", sock)
+        try:
+            buf = b""
+            while True:
+                data = sock.recv(1500)
+                if not data: break
+                buf += data
+                commands = buf.split(b"\n")
+                buf = commands[-1]
+                for i in range(0, len(commands)-1):
+                    cmd = commands[i].strip().decode().split(" ")
+                    print("command", cmd)
+                    if cmd[0] == "quit":
+                        break
+                    elif cmd[0] == "program":
+                        board = int(cmd[1])
+                        if board < 0:
+                            for b in self.boards:
+                                print(b, self.boards[b]["config"])
+                                if "program" in self.boards[b]["config"] and self.boards[b]["config"]["program"] == cmd[2]:
+                                    board = b
+                                    break
+                            else:
+                                print("ERROR: unable to find board ID for {}".format(cmd[2]))
+                                continue
+                        self.program(board, cmd[2])
+                
+        finally:
+            sock.shutdown(socket.SHUT_RDWR)
+            sock.close()
+
+    def run_server(self):
+        # create an INET, STREAMing socket
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
+        # bind the socket to a public host, and a well-known port
+        self.server_socket.bind(("0.0.0.0", 4445))
+        # become a server socket
+        self.server_socket.listen(5)
+
+        clients = []
+
+        try:
+            while True:
+                sock, addr = self.server_socket.accept()
+                if self.event.is_set(): 
+                    sock.shutdown(socket.SHUT_RDWR)
+                    break
+                thr = threading.Thread(target=self.receive_from_client, args=(sock,))
+                thr.start()
+                clients.append((sock, thr))
+                
+        finally:
+            print("Closing telnet server")
+            self.server_socket.close()
+            for c, t in clients:
+                try:
+                    c.shutdown(socket.SHUT_RDWR)
+                    t.join()
+                except OSError: pass
+
     def txctl(self, enabled):
         print("txctl", enabled)
-        self.txfunc({"bus": 5, "data": b"\x01" if enabled else b"\x00", "id": 0, "fd": False})
+        self.inst.transmit({"bus": 5, "data": b"\x01" if enabled else b"\x00", "id": 0, "fd": False})
         self.timeouts["txctl"] = (time.time() + 0.5, lambda *args: self.txctl(enabled))
 
     def c70ctl(self, enabled):
         if enabled:
-            self.txfunc({"bus": 2, "data": b"\x00"*8, "id": 1793, "fd": False})
+            self.inst.transmit({"bus": 2, "data": b"\x00"*8, "id": 1793, "fd": False})
         else:
-            self.txfunc({"bus": 2, "data": b"\xff"*8, "id": 1793, "fd": False})
+            self.inst.transmit({"bus": 2, "data": b"\xff"*8, "id": 1793, "fd": False})
 
     def simulate_state(self):
         self.onrecv({'bus': 2, 'id': 1108475904, 'data': b'\x00\x01\x00\x00\xC0\xef\xcd\xab', 'ts': 63604, 'fd': 1})
 
     def send_command(self, bus, id, data):
-        self.txfunc({"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True})
+        self.inst.transmit({"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True})
 
     def make_command(self, bus, id, data):
         return {"bus": bus, "data": data, "id": (id<<18) | (1<<30), "fd": True}
@@ -104,7 +176,7 @@ class BootManager:
 
     def start_operation(self, board, gen):
         self.boards[board]["op_generator"] = gen
-        self.txfunc(next(gen))
+        self.inst.transmit(next(gen))
 
     #######################################################
     # Generator functions for operations
@@ -129,12 +201,20 @@ class BootManager:
     def read_bank_identifiers_gen(self, board):
         bus = self.boards[board]["bus"]
         yield self.make_read(bus, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1))
-        name = self.boards[board]["last_packet"]["data"].strip(b"\x00").decode()
+        name = self.boards[board]["last_packet"]["data"].strip(b"\x00")
+        try:
+            name = name.decode()
+        except UnicodeDecodeError:
+            pass
         print("First bank", name)
         self.boards[board]["bank1"] = name
         self.on_board_state_change(board)
         yield self.make_read(bus, board, 0x3ffe0>>3, 32, (self.boards[board]["bankstatus"]&1)^1)
-        name = self.boards[board]["last_packet"]["data"].strip(b"\x00").decode()
+        name = self.boards[board]["last_packet"]["data"].strip(b"\x00")
+        try:
+            name = name.decode()
+        except UnicodeDecodeError:
+            pass
         print("Second bank", name)
         self.boards[board]["bank2"] = name
         self.on_board_state_change(board)
@@ -230,10 +310,12 @@ class BootManager:
                 yield from self.write_and_verify_gen(board, (start_address - 0x08000000)>>3, buf)
         print()
     
-    def program_gen(self, board):
-        print("program_gen", board)
+    def program_gen(self, board, fname=None):
+        if fname is None: 
+            fname = self.boards[board]["config"]["program"]
+        print("program_gen", board, fname)
         yield from self.boot_gen(board)
-        yield from self.write_and_verify_from_file_gen(board, self.config[board]["program"])
+        yield from self.write_and_verify_from_file_gen(board, fname)
         yield from self.hard_bank_swap_gen(board)
 
 
@@ -250,6 +332,7 @@ class BootManager:
 
     def read_bank_identifiers(self):
         for board in self.boards:
+            if self.boards[board]["bus"] == 0: continue
             print("Reading bank identifiers", board)
             self.start_operation(board, self.read_bank_identifiers_gen(board))
 
@@ -265,9 +348,9 @@ class BootManager:
         print("Resetting", board)
         self.start_operation(board, self.reset_gen(board))
 
-    def program(self, board):
+    def program(self, board, fname=None):
         print("Programming", board)
-        self.start_operation(board, self.program_gen(board))
+        self.start_operation(board, self.program_gen(board, fname))
 
 
     #######################################################
@@ -293,10 +376,6 @@ class BootManager:
         board = packet["board"]
         if board not in self.boards:
             row = len(self.boards)+1
-            if board not in self.config:
-                self.config[board] = {
-                    "program": ""
-                }
             self.boards[board] = {
                 "index": len(self.boards),
                 "bus": packet["bus"],
@@ -305,14 +384,15 @@ class BootManager:
                 "offset": 0,
                 "lastwrite": b"",
                 "booted": True,
-                "op_generator": None
+                "op_generator": None,
+                "config": {"program": ""}
             }
             self.on_board_added(board)
         self.boards[board]["last_packet"] = packet
         if self.boards[board]["op_generator"] is not None:
             try:
                 v = next(self.boards[board]["op_generator"])
-                if v is not None: self.txfunc(v)
+                if v is not None: self.inst.transmit(v)
             except StopIteration:
                 print("Operation done")
                 self.boards[board]["op_generator"] = None
@@ -332,5 +412,16 @@ class BootManager:
 
     def close(self):
         self.event.set()
+        if self.server_socket is not None:
+            self.server_socket.close()
+        cboards = []
+        for b in self.boards:
+            self.boards[b]["config"].update(id=b, bus=self.boards[b]["bus"])
+            cboards.append(self.boards[b]["config"])
+        print(cboards)
+        with open(os.path.join(self.inst.config_dir, "boards.json"), "w") as f:
+            f.write(json.dumps(cboards))
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("localhost", 4445))
+        self.server_thread.join()
         self.timeout_thread.join()
 

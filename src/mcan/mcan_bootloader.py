@@ -61,6 +61,7 @@ class BootloaderMenu(tkinter.Toplevel):
         self.treeview.config(yscrollcommand=vsb.set)
 
         self.contextmenu = tkinter.Menu(self, tearoff=0)
+        self.contextmenu.add_command(label="Change filename", command=self.set_filename)
         self.contextmenu.add_command(label="Program", command=self.program)
         self.contextmenu.add_command(label="Boot", command=self.boot)
         self.contextmenu.add_command(label="Soft bank swap", command=self.soft_bank_swap)
@@ -107,12 +108,12 @@ class BootloaderMenu(tkinter.Toplevel):
     def update_board_item(self, board):
         b = self.boot_manager.boards[board]
         self.treeview.item(board, values=(board, b.get("bank1", ""), b.get("bank2", ""), hex(b["bootstate"])[2:].rjust(8, "0"), ("2" if b["bankstatus"] & 0x02 else "1"), 
-                           ("2" if b["bankstatus"] & 0x01 else "1"), os.path.basename(self.boot_manager.config[board]["program"])))
+                           ("2" if b["bankstatus"] & 0x01 else "1"), os.path.basename(b["config"].get("program", ""))))
 
     def insert_board_item(self, board):
         b = self.boot_manager.boards[board]
         self.treeview.insert(iid=board, parent="", text="", index="end", values=(board, b.get("bank1", ""), b.get("bank2", ""), hex(b["bootstate"])[2:].rjust(8, "0"), ("2" if b["bankstatus"] & 0x02 else "1"), 
-                             ("2" if b["bankstatus"] & 0x01 else "1"), os.path.basename(self.boot_manager.config[board]["program"])))
+                             ("2" if b["bankstatus"] & 0x01 else "1"), os.path.basename(b["config"].get("program", ""))))
 
     def on_error(self, e):
         threading.Thread(target=tkinter.messagebox.showerror, args=("Bootloader error", str(e))).start()
@@ -147,7 +148,10 @@ class BootloaderMenu(tkinter.Toplevel):
         if event.widget != self.focus_get():
             self.contextmenu.unpost()
 
-    def set_filename(self, board):
-        self.config[board]["program"] = filedialog.askopenfilename(filetypes=[("HEX file", "*.ihex")])
-        self.boards[board]["elements"][5].config(text=os.path.basename(self.config[board]["program"]))
+    def set_filename(self, board=None):
+        if board is None: board = self.context_target
+        fname = filedialog.askopenfilename(filetypes=[("HEX file", "*.ihex")])
+        if fname:
+            self.boot_manager.boards[board]["config"]["program"] = fname
+            self.update_board_item(board)
 

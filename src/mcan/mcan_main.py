@@ -5,10 +5,13 @@ import cantools
 import queue
 import time
 import os.path
+import json
+import inspect
 
 import tkinter
 from tkinter import ttk
 import tkinter.font
+import tkinter.filedialog
 
 from mcan import mcan_dash, sources, bootloader, mcan_bootloader, __version__
 
@@ -28,6 +31,17 @@ class CANStream:
         self.branches.append([enabled, func, br])
         return br
 
+    def filter_range(self, min_id=0, max_id=0x7ff, busses=None):
+        if busses is not None:
+            source = f"""def filter_range(packet):\n    if packet["bus"] in {set(busses)} and packet["id"] >= {min_id} and packet["id"] <= {max_id}: return packet"""
+        else:
+            source = f"""def filter_range(packet):\n    if packet["id"] >= {min_id} and packet["id"] <= {max_id}: return packet"""
+        gl = {}
+        exec(source, gl)
+        gl["filter_range"]._mcan_source = source
+        br = CANStream()
+        return self.exec(gl["filter_range"])
+
     def apply(self, element):
         for b in self.branches:
             if b[0]:
@@ -38,8 +52,21 @@ class MCan:
     def __init__(self):
         self.rxrootstream = CANStream()
         self.txrootstream = CANStream()
+        self.main_window = None
+
+        self.config_dir = os.path.join(os.path.expanduser("~"), ".mcan")
+        try:
+            with open(os.path.join(self.config_dir, "setup.json")) as f:
+                self.setup = json.load(f)
+        except FileNotFoundError:
+            os.mkdir(self.config_dir)
+            self.setup = {}
+            with open(os.path.join(self.config_dir, "setup.json"), "w") as f:
+                f.write(json.dumps(self.setup))
+        if "sources" not in self.setup: self.setup["sources"] = []
+        if "dbc" not in self.setup: self.setup["dbc"] = {}
         
-        self.boot_manager = bootloader.BootManager(self.transmit)
+        self.boot_manager = bootloader.BootManager(self)
         self.rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.boot_manager.onrecv)
 
         self.total_packets = 0
@@ -54,14 +81,48 @@ class MCan:
 
     def load_file(self, bus, fname):
         self.can_db[bus] = cantools.database.load_file(fname)
+        self.setup["dbc"][str(bus)] = os.path.abspath(fname)
+
+    def dump_stream_setup(self):
+        def dump_stream_setup_rec(s):
+            return [[b[0], b[1]._mcan_source, dump_stream_setup_rec(b[2])] for b in s.branches if hasattr(b[1], "_mcan_source")]
+        self.setup["tx"] = []
+        self.setup["rx"] = dump_stream_setup_rec(self.rxrootstream)
+        print(self.setup["rx"])
+
+    def function_from_string(self, string):
+        gl = {"self": self}
+        exec(string, gl)
+        for k in gl:
+            if k != "self" and k != "__builtins__":
+                gl[k]._mcan_source = string
+                return gl[k]
+
+    def load_setup(self, fname):
+        with open(fname) as f:
+            setup = json.load(f)
+        for b in setup["dbc"]:
+            self.load_file(int(b), setup["dbc"][b])
+        for s in setup["sources"]:
+            obj = sources.construct(self, **s)
+            if obj is not None: self.source(obj)
+        
+        def load_stream_rec(target, setup):
+            for u in setup:
+                s = target.exec(self.function_from_string(u[1]), u[0])
+                load_stream_rec(s, u[2])
+        load_stream_rec(self.rxrootstream, setup["rx"])
 
     def close(self):
         self.stop_sources()
         self.boot_manager.close()
+        self.dump_stream_setup()
+        print(self.setup)
 
     def source(self, s):
         s.rxrootstream = self.rxrootstream
         self.source_list.append(s)
+        self.setup["sources"].append(s.dump())
 
     def start_sources(self):
         for s in self.source_list: 
@@ -114,10 +175,16 @@ class MainWindow(tkinter.Tk):
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
         self.inst = inst
+        self.inst.main_window = self
         style = ttk.Style(self)
         style.configure("Treeview", font=("Ubuntu Mono", 10))
 
         self.menubar = tkinter.Menu(self)
+        self.setupmenu = tkinter.Menu(self.menubar, tearoff=0)
+        self.setupmenu.add_command(label="Load setup", command=self.save_setup)
+        self.setupmenu.add_command(label="Save setup", command=lambda: self.save_setup(False))
+        self.setupmenu.add_command(label="Save setup as default", command=lambda: self.save_setup(True))
+        self.menubar.add_cascade(label="Setup", menu=self.setupmenu)
         self.bootmenu = tkinter.Menu(self.menubar, tearoff=0)
         self.bootmenu.add_command(label="Bootloader", command=self.open_bootloader)
         self.menubar.add_cascade(label="Bootloader", menu=self.bootmenu)
@@ -148,6 +215,15 @@ class MainWindow(tkinter.Tk):
         
         self.ts = time.time()
 
+    def save_setup(self, default):
+        if default:
+            fname = os.path.join(self.inst.config_dir, "setup.json")
+        else:
+            fname = tkinter.filedialog.asksaveasfilename()
+        with open(fname, "w") as f:
+            self.inst.dump_stream_setup()
+            f.write(json.dumps(self.inst.setup))
+
     def close(self):
         self.inst.close()
         for d in self.dash_targets:
@@ -164,6 +240,16 @@ class MainWindow(tkinter.Tk):
 
     def dash_update(self, packet, target):
         self.dash_queue.put((packet, target))
+
+    def dash_func(self, target_or_rule):
+        if isinstance(target_or_rule, str):
+            source = f"""def send_to_dash(packet):\n    self.main_window.dash_update(packet, "{target_or_rule}")"""
+        else:
+            source = f"""def send_to_dash(packet):\n    self.main_window.dash_update(packet, {target_or_rule}[packet["bus"]])"""
+        gl = {"self": self.inst}
+        exec(source, gl)
+        gl["send_to_dash"]._mcan_source = source
+        return gl["send_to_dash"]
 
     def update_elements(self):
         t0 = time.time()
