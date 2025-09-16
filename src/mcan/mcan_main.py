@@ -6,7 +6,6 @@ import queue
 import time
 import os.path
 import json
-import inspect
 
 import tkinter
 from tkinter import ttk
@@ -55,19 +54,12 @@ class MCan:
         self.main_window = None
 
         self.config_dir = os.path.join(os.path.expanduser("~"), ".mcan")
-        try:
-            with open(os.path.join(self.config_dir, "setup.json")) as f:
-                self.setup = json.load(f)
-        except FileNotFoundError:
-            os.mkdir(self.config_dir)
-            self.setup = {}
-            with open(os.path.join(self.config_dir, "setup.json"), "w") as f:
-                f.write(json.dumps(self.setup))
+        self.setup = {}
         if "sources" not in self.setup: self.setup["sources"] = []
         if "dbc" not in self.setup: self.setup["dbc"] = {}
         
         self.boot_manager = bootloader.BootManager(self)
-        self.rxrootstream.filter(lambda packet: packet["id"]&(1<<30)).exec(self.boot_manager.onrecv)
+        self.rxrootstream.filter(lambda packet: packet["id"]&(1<<30) or packet["bus"] == 5).exec(self.boot_manager.onrecv)
 
         self.total_packets = 0
         self.last_packets = 0

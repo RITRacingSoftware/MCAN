@@ -17,6 +17,9 @@ dynamic = ["version"]
 [project.urls]
 repository = "https://github.com/RITRacingSoftware/MCAN"
 
+[project.scripts]
+mcan = "mcan.__init__:_main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

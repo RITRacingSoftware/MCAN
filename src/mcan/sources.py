@@ -214,6 +214,7 @@ class MCAN_Ethernet:
             if self.abortpipe_r in rlist: break
             frame += self.socket.recv(1500)
             if len(frame) == 0:
+                self.socket.shutdown(socket.SHUT_RDWR)
                 print("Socket closed!")
                 return
             i = 0

@@ -229,7 +229,7 @@ class BootManager:
             raise BootloaderError("BSM in non-booting bank did not run")
         if not (packet["status"] == BOOT_STATUS_SOFTSWAP_SUCCESS and packet["bootstate"] == BOOT_STATE_KEY | BOOT_STATE_SOFT_SWITCHED):
             raise BootloaderError("Unknown error while soft switching (status {}, state {:08x})".format(packet["status"], packet["bootstate"]))
-        print("After soft swap", self.boards[board]["last_packet"])
+        print("Soft swapped {} successfully".format(board), self.boards[board]["last_packet"])
 
     def hard_bank_swap_gen(self, board):
         bus = self.boards[board]["bus"]
@@ -332,9 +332,10 @@ class BootManager:
 
     def read_bank_identifiers(self):
         for board in self.boards:
-            if self.boards[board]["bus"] == 0: continue
+            if self.boards[board]["bus"] == 0 or self.boards[board]["bootstate"] == 0: continue
             print("Reading bank identifiers", board)
             self.start_operation(board, self.read_bank_identifiers_gen(board))
+            time.sleep(0.1)
 
     def soft_bank_swap(self, board):
         print("Soft bank swap", board)
@@ -371,44 +372,51 @@ class BootManager:
                 if print_response: print("    Status {:02x}, bank status {:02x}, FLASH status {:04x}, boot state {:08x}".format(*stat))
 
     def onrecv(self, packet):
-        #print("Bootloader received", packet, hex(packet["id"]))
-        self.parse_response(packet, True)
-        board = packet["board"]
-        if board not in self.boards:
-            row = len(self.boards)+1
-            self.boards[board] = {
-                "index": len(self.boards),
-                "bus": packet["bus"],
-                "bankstatus": packet["bankstatus"],
-                "bootstate": packet["bootstate"],
-                "offset": 0,
-                "lastwrite": b"",
-                "booted": True,
-                "op_generator": None,
-                "config": {"program": ""}
-            }
-            self.on_board_added(board)
-        self.boards[board]["last_packet"] = packet
-        if self.boards[board]["op_generator"] is not None:
-            try:
-                v = next(self.boards[board]["op_generator"])
-                if v is not None: self.inst.transmit(v)
-            except StopIteration:
-                print("Operation done")
-                self.boards[board]["op_generator"] = None
-            except BootloaderError as e:
-                self.boards[board]["op_generator"] = None
-                self.on_error(e)
-                print("Operation terminated due to error:", e)
-
         if packet["bus"] == 5 and packet["id"] == 0 and "txctl" in self.timeouts:
+            print("cancelling txctl")
             del self.timeouts["txctl"]
+            return
+        elif packet["bus"] > 3:
+            return
+        print("Bootloader received", packet, hex(packet["id"]))
                 
-        elif packet["type"] == "status":
-            self.boards[board]["booted"] = True
-            self.boards[board]["bootstate"] = packet["bootstate"]
-            self.boards[board]["bankstatus"] = packet["bankstatus"]
-            self.on_board_state_change(board)
+        self.parse_response(packet, True)
+        try:
+            board = packet["board"]
+            if board not in self.boards:
+                row = len(self.boards)+1
+                self.boards[board] = {
+                    "index": len(self.boards),
+                    "bus": packet["bus"],
+                    "bankstatus": packet["bankstatus"],
+                    "bootstate": packet["bootstate"],
+                    "offset": 0,
+                    "lastwrite": b"",
+                    "booted": True,
+                    "op_generator": None,
+                    "config": {"program": ""}
+                }
+                self.on_board_added(board)
+            self.boards[board]["last_packet"] = packet
+            if self.boards[board]["op_generator"] is not None:
+                try:
+                    v = next(self.boards[board]["op_generator"])
+                    if v is not None: self.inst.transmit(v)
+                except StopIteration:
+                    print("Operation done")
+                    self.boards[board]["op_generator"] = None
+                except BootloaderError as e:
+                    self.boards[board]["op_generator"] = None
+                    self.on_error(e)
+                    print("Operation terminated due to error:", e)
+
+            elif packet["type"] == "status":
+                self.boards[board]["booted"] = True
+                self.boards[board]["bootstate"] = packet["bootstate"]
+                self.boards[board]["bankstatus"] = packet["bankstatus"]
+                self.on_board_state_change(board)
+        except Exception as e:
+            print("Error in bootloader RX", e)
 
     def close(self):
         self.event.set()

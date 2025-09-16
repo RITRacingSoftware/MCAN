@@ -2,14 +2,22 @@ import requests
 import time
 import math
 import mcan
-import sources
 import threading
 
 m = mcan.MCan()
+m.load_file(1, "../Formula-DBC/sensor_dbc.dbc")
+m.load_file(2, "../Formula-DBC/main_dbc.dbc")
+m.load_file(3, "../Formula-DBC/inverter_dbc.dbc")
+m.load_file(5, "../Formula-DBC/control_dbc.dbc")
+win = mcan.MainWindow(m)
 
-m.source(sources.Replay(m, "inputs/loginverter.pcap", 3, 1))
-m.source(sources.Replay(m, "inputs/logsensor.pcap", 1, 1))
-m.source(sources.Replay(m, "inputs/logmain.pcap", 2, 1))
+ethernet = mcan.sources.MCAN_Ethernet(m, "192.168.72.100", 5001)
+#ethernet = mcan.sources.MCAN_Ethernet(m, "datalogger.local", 5001, tcp=True)
+m.source(ethernet)
+
+#m.source(sources.Replay(m, "inputs/loginverter.pcap", 3, 1))
+#m.source(sources.Replay(m, "inputs/logsensor.pcap", 1, 1))
+#m.source(sources.Replay(m, "inputs/logmain.pcap", 2, 1))
 
 s = requests.Session()
 with open("token.txt") as f:
