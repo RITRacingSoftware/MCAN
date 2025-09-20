@@ -11,6 +11,22 @@ import select
 import os
 import sys
 
+def read_cf(data):
+    msb = 0
+    offset = 0
+    msb_loaded = False
+    i = 0
+    while i < len(data):
+        bus, length, ts, id = struct.unpack("<BBHI", data[i:i+8])
+        if bus == 4:
+            msb = struct.unpack("<I", data[i+8:i+12])[0]<<16
+            if not msb_loaded:
+                msb_loaded = True
+                offset = msb
+        else:
+            yield i + (length & 0x7f) + 8, {"bus": bus, "id": id, "data": data[i+8:i+8+(length&0x7f)], "ts": ts+msb-offset, "fd": length>>7}
+        i += (length & 0x7f)+8
+
 class RandomFrames:
     def __init__(self, inst):
         self.inst = inst
@@ -111,7 +127,7 @@ class LoRATelemetry:
 
 
 class Replay:
-    def __init__(self, inst, fname, bus, scale=1):
+    def __init__(self, inst, fname, bus=None, scale=1):
         self.fname = fname
         self.bus = bus
         self.scale = scale
@@ -130,35 +146,63 @@ class Replay:
         t0 = 0
         ts0 = 0
         offset_ready = False
-        with open(self.fname, "rb") as f:
-            head = f.read(24)
-            while self.running:
-                head = f.read(16)
-                if len(head) == 0:
-                    offset_ready = False
-                    f.seek(0)
-                    f.read(24)
-                    print("rolling over")
-                    continue
-                sec, usec, length = struct.unpack("<3I", head[:12])
-                ts = sec + usec / 1000000.0
-                data = f.read(length)
-                if offset_ready:
-                    t = (time.time() - t0)/self.scale + ts0
-                    self.backlog = t - ts
-                    if t < ts: time.sleep(self.scale*(ts - t))
-                else:
-                    ts0 = ts
-                    t0 = time.time()
-                    offset_ready = True
-                packet = {
-                    "id": struct.unpack(">I", data[:4])[0],
-                    "fd": data[5] > 0,
-                    "ts": ts*1000000,
-                    "data": data[8:],
-                    "bus": self.bus
-                }
-                self.inst.onrecv(packet)
+        msb = 0
+        ext = os.path.splitext(self.fname)[1][1:]
+        if ext == "pcap":
+            with open(self.fname, "rb") as f:
+                head = f.read(24)
+                while self.running:
+                    head = f.read(16)
+                    if len(head) == 0:
+                        offset_ready = False
+                        f.seek(0)
+                        f.read(24)
+                        print("rolling over")
+                        continue
+                    sec, usec, length = struct.unpack("<3I", head[:12])
+                    ts = sec + usec / 1000000.0
+                    data = f.read(length)
+                    if offset_ready:
+                        t = (time.time() - t0)/self.scale + ts0
+                        self.backlog = t - ts
+                        if t < ts: time.sleep(self.scale*(ts - t))
+                    else:
+                        ts0 = ts
+                        t0 = time.time()
+                        offset_ready = True
+                    packet = {
+                        "id": struct.unpack(">I", data[:4])[0],
+                        "fd": data[5] > 0,
+                        "ts": ts*1000000,
+                        "data": data[8:],
+                        "bus": self.bus
+                    }
+                    self.inst.onrecv(packet)
+        elif ext == "zcf":
+            print("Replaying ZCF")
+            with open(self.fname, "rb") as f:
+                obj = zlib.decompressobj()
+                cont = obj.decompress(f.read())
+                zcf_iter = read_cf(cont)
+                while self.running:
+                    try:
+                        n, packet = next(zcf_iter)
+                    except StopIteration:
+                        print("rollong over")
+                        offset_ready = False
+                        zcf_iter = read_cf(cont)
+                        continue
+                    ts = packet["ts"] / 1000000.0
+                    if offset_ready:
+                        t = (time.time() - t0)/self.scale + ts0
+                        self.backlog = t - ts
+                        if t < ts: time.sleep(self.scale*(ts - t))
+                    else:
+                        ts0 = ts
+                        t0 = time.time()
+                        offset_ready = True
+                    self.inst.onrecv(packet)
+
     
     def dump_stats(self):
         return {"replay_backlog": self.backlog}
