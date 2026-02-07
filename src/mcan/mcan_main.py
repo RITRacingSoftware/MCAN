@@ -255,7 +255,7 @@ class MainWindow(tkinter.Tk):
         except queue.Empty: pass
         for d in self.dash_targets:
             self.dash_targets[d].update_elements()
-        self.after(10, self.update_elements)
+        self.after(30, self.update_elements)
 
     def update_stats(self):
         stat = self.inst.dump_stats()
