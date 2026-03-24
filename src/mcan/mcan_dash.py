@@ -1,6 +1,7 @@
 import tkinter
 from tkinter import ttk
 import struct
+from cantools.database.namedsignalvalue import NamedSignalValue
 
 
 class CANDashboard(tkinter.Frame):
@@ -59,8 +60,19 @@ class CANDashboard(tkinter.Frame):
                 self.dash.insert(parent=el["iid"], index="end", text="", values=("", "", l["name"], l["value"], "", ""), iid=l["iid"])
         for t, l in zip(tree, el["signals"]):
             v = dec[l["name"]]
+            #if isinstance(v, NamedSignalValue): v = str(v)
             if l["mux"]:
+                if not isinstance(v, int): continue
+                # Signal a multiplexer signal
+                #print(v, packet, dec, tree)
+                # TODO: when a multiplexer also has string values, then the code will fail
+                # Currently we only decode muxes if the decoded value is an integer, but
+                # we should really be mapping the decoded strings as well
                 if v not in l["value"]:
+                    # Mutliplexer value is received for the first time
+                    index = 0
+                    for v_old in l["value"]:
+                        if v > v_old: index += 1
                     l["value"][v] = {
                         "iid": l["iid"] + (v,),
                         "name": "",
@@ -70,7 +82,7 @@ class CANDashboard(tkinter.Frame):
                         "cycle": 0,
                         "last_ts": packet["ts"]
                     }
-                    self.dash.insert(parent=l["iid"], index="end", iid=l["iid"]+(v,), text="", 
+                    self.dash.insert(parent=l["iid"], index=index, iid=l["iid"]+(v,), text="", 
                         values=("", "", l["value"][v]["name"], v , "", 0))
                 l["value"][v]["count"] += 1
                 l["value"][v]["cycle"] = packet["ts"] - l["value"][v]["last_ts"]

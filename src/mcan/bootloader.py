@@ -349,6 +349,10 @@ class BootManager:
         print("Resetting", board)
         self.start_operation(board, self.reset_gen(board))
 
+    def reset_all(self):
+        print("Resetting all boards")
+        self.send_command(1, 0x7ff, b"\x00")
+
     def program(self, board, fname=None):
         print("Programming", board)
         self.start_operation(board, self.program_gen(board, fname))
@@ -379,8 +383,10 @@ class BootManager:
         elif packet["bus"] > 3:
             return
         print("Bootloader received", packet, hex(packet["id"]))
-                
-        self.parse_response(packet, True)
+        try:        
+            self.parse_response(packet, True)
+        except:
+            return
         try:
             board = packet["board"]
             if board not in self.boards:
@@ -398,6 +404,7 @@ class BootManager:
                 }
                 self.on_board_added(board)
             self.boards[board]["last_packet"] = packet
+            if self.boards[board]["bus"] == 0: self.boards[board]["bus"] = packet["bus"]
             if self.boards[board]["op_generator"] is not None:
                 try:
                     v = next(self.boards[board]["op_generator"])

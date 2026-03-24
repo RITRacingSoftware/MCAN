@@ -285,6 +285,12 @@ class MCAN_Ethernet:
         frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), 0, packet["id"])+packet["data"]
         self.socket.sendto(frame, (self.ip, self.port))
 
+    def transmit_multiple(self, packets):
+        frame = b""
+        for packet in packets:
+            frame += struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), 0, packet["id"])+packet["data"]
+        self.socket.sendto(frame, (self.ip, self.port))
+
     def dump(self):
         return {
             "type": "ip",

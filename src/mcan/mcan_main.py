@@ -6,6 +6,7 @@ import queue
 import time
 import os.path
 import json
+import struct
 
 import tkinter
 from tkinter import ttk
@@ -57,9 +58,11 @@ class MCan:
         self.setup = {}
         if "sources" not in self.setup: self.setup["sources"] = []
         if "dbc" not in self.setup: self.setup["dbc"] = {}
+        if "options" not in self.setup: self.setup["options"] = {}
+        if "poll_errors" not in self.setup["options"]: self.setup["options"]["poll_errors"] = False
         
         self.boot_manager = bootloader.BootManager(self)
-        self.rxrootstream.filter(lambda packet: packet["id"]&(1<<30) or packet["bus"] == 5).exec(self.boot_manager.onrecv)
+        self.rxrootstream.filter(lambda packet: (packet["id"]&(1<<30) and packet["fd"]) or packet["bus"] == 5).exec(self.boot_manager.onrecv)
 
         self.total_packets = 0
         self.last_packets = 0
@@ -67,6 +70,7 @@ class MCan:
         self.last_bytes = 0
         self.last_time = 0
         self.start_time = time.time()
+        self.can_errors = None
 
         self.source_list = []
         self.can_db = {}
@@ -98,6 +102,7 @@ class MCan:
         for s in setup["sources"]:
             obj = sources.construct(self, **s)
             if obj is not None: self.source(obj)
+        self.setup["options"].update(setup["options"])
         
         def load_stream_rec(target, setup):
             for u in setup:
@@ -130,6 +135,8 @@ class MCan:
     def onrecv(self, packet):
         self.total_packets += 1
         self.total_bytes += len(packet["data"])
+        if packet["bus"] == 5 and packet["id"] == 1:
+            self.can_errors = struct.unpack("<4H", packet["data"][24:32])
         self.rxrootstream.apply(packet)
     
     def can_decode(self, packet, **kwargs):
@@ -150,7 +157,8 @@ class MCan:
             "total_bytes": self.total_bytes,
             "packet_rate": (self.total_packets - self.last_packets)/diff,
             "byte_rate": (self.total_bytes - self.last_bytes)/diff,
-            "total_time": t - self.start_time
+            "total_time": t - self.start_time,
+            "can_errors": self.can_errors
         }
         self.last_time = t
         self.last_packets = self.total_packets
@@ -158,6 +166,8 @@ class MCan:
         for s in self.source_list:
             if hasattr(s, "dump_stats"):
                 stats.update(**s.dump_stats())
+        if self.setup["options"]["poll_errors"]: 
+            self.transmit({"bus": 5, "id": 1, "fd": False, "data": b""})
         return stats
 
 class MainWindow(tkinter.Tk):
@@ -192,7 +202,7 @@ class MainWindow(tkinter.Tk):
             [["total_packets", "Total packets", "{} packets"], ["packet_rate", "Packet rate", "{:.4f} packets/s"]],
             [["total_bytes", "Total bytes", "{} B"], ["byte_rate", "Byte rate", "{:.4f} B/s"]],
             [["total_time", "Total time", "{:.4f} s"], ["dash_backlog", "Backlog", "{} packets"]],
-            [["replay_backlog", "Replay backlog", "{:.4f}"]]
+            [["replay_backlog", "Replay backlog", "{:.4f}"], ["can_errors", "Total CAN errors", "{0[0]} arb, {0[1]} data, {0[2]} off, {0[3]} tx"]]
         ]
         self.stats_elements = []
         self.stats_table.grid_columnconfigure(1, weight=1, minsize=100)
@@ -221,11 +231,18 @@ class MainWindow(tkinter.Tk):
         for d in self.dash_targets:
             self.dash_targets[d].close()
 
-    def can_decode(self, packet):
+    def can_decode(self, packet, **kwargs):
         if packet["bus"] not in self.inst.can_db: return None, {}
         db = self.inst.can_db[packet["bus"]]
-        if packet["id"] not in db._frame_id_to_message: return None, {}
-        return db.get_message_by_frame_id(packet["id"]), db.decode_message(packet["id"], packet["data"])
+        #if packet["id"]&0x1fffffff not in db._frame_id_to_message: return None, {}
+        i = (packet["id"]&0x1fffffff) | ((packet["id"]&0x40000000)<<1)
+        try:
+            return db.get_message_by_frame_id(i), db.decode_message(i, packet["data"], **kwargs)
+        except:
+            return None, {}
+            print("Error decoding", packet)
+            print(" ".join(hex(x)[2:].rjust(2, "0") for x in packet["data"]))
+            raise
 
     def open_bootloader(self):
         self.boot = mcan_bootloader.BootloaderMenu(self.inst.boot_manager)
@@ -245,6 +262,7 @@ class MainWindow(tkinter.Tk):
 
     def update_elements(self):
         t0 = time.time()
+        modified = False
         try:
             while True:
                 packet, target = self.dash_queue.get_nowait()
@@ -252,10 +270,12 @@ class MainWindow(tkinter.Tk):
                     self.dash_targets[target] = mcan_dash.CANDashboard(self, target, self.can_decode)
                     self.notebook.add(self.dash_targets[target], text=target)
                 self.dash_targets[target].dash_update(packet)
+                modified = True
         except queue.Empty: pass
-        for d in self.dash_targets:
-            self.dash_targets[d].update_elements()
-        self.after(10, self.update_elements)
+        if modified:
+            for d in self.dash_targets:
+                self.dash_targets[d].update_elements()
+        self.after(30, self.update_elements)
 
     def update_stats(self):
         stat = self.inst.dump_stats()
@@ -264,17 +284,16 @@ class MainWindow(tkinter.Tk):
         if self.stats_elements == []:
             for rn, r in enumerate(self.stats_layout):
                 row = []
-                if [x for x in r if x[0] in stat]:
-                    for cn, c in enumerate(r):
-                        row.append(tkinter.Label(self.stats_table, text="", font=(None, 10)))
-                        row[-1].grid(row=rn, column=2*cn+1, sticky="w")
-                        tkinter.Label(self.stats_table, text=self.stats_layout[rn][cn][1], font=(None, 10)).grid(row=rn, column=2*cn, sticky="w")
+                for cn, c in enumerate(r):
+                    row.append(tkinter.Label(self.stats_table, text="", font=(None, 10)))
+                    row[-1].grid(row=rn, column=2*cn+1, sticky="w")
+                    tkinter.Label(self.stats_table, text=self.stats_layout[rn][cn][1], font=(None, 10)).grid(row=rn, column=2*cn, sticky="w")
                 self.stats_elements.append(row)
 
         for rn, r in enumerate(self.stats_layout):
-            if [x for x in r if x[0] in stat] == []: continue
             for cn, c in enumerate(r):
-                self.stats_elements[rn][cn]["text"] = self.stats_layout[rn][cn][2].format(stat[self.stats_layout[rn][cn][0]])
+                el = self.stats_layout[rn][cn][0]
+                self.stats_elements[rn][cn]["text"] = self.stats_layout[rn][cn][2].format(stat[el]) if (el in stat and stat[el] is not None) else ""
 
     def mainloop(self):
         self.inst.start_sources()

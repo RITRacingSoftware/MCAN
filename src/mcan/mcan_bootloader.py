@@ -25,6 +25,7 @@ class BootloaderMenu(tkinter.Toplevel):
         self.cmdmenu = tkinter.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Commands", menu=self.cmdmenu)
         self.cmdmenu.add_command(label="Boot all", command=self.boot_manager.boot_all)
+        self.cmdmenu.add_command(label="Reset all", command=self.boot_manager.reset_all)
         self.cmdmenu.add_command(label="Disable non-boot messages", command=lambda: self.boot_manager.txctl(0))
         self.cmdmenu.add_command(label="Enable non-boot messages", command=lambda: self.boot_manager.txctl(1))
         self.cmdmenu.add_command(label="Disable C70", command=lambda: self.boot_manager.c70ctl(0))
