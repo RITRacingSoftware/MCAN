@@ -146,8 +146,9 @@ class BootloaderMenu(tkinter.Toplevel):
             self.contextmenu.unpost()
 
     def click(self, event):
-        if event.widget != self.focus_get():
-            self.contextmenu.unpost()
+        pass
+        #if event.widget != self.focus_get():
+        #    self.contextmenu.unpost()
 
     def set_filename(self, board=None):
         if board is None: board = self.context_target

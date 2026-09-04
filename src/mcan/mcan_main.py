@@ -13,7 +13,7 @@ from tkinter import ttk
 import tkinter.font
 import tkinter.filedialog
 
-from mcan import mcan_dash, sources, bootloader, mcan_bootloader, __version__
+from mcan import mcan_dash, sources, bootloader, mcan_bootloader, mcan_config, __version__
 
 
 
@@ -59,6 +59,7 @@ class MCan:
         if "sources" not in self.setup: self.setup["sources"] = []
         if "dbc" not in self.setup: self.setup["dbc"] = {}
         if "options" not in self.setup: self.setup["options"] = {}
+        if "extensions" not in self.setup: self.setup["extensions"] = []
         if "poll_errors" not in self.setup["options"]: self.setup["options"]["poll_errors"] = False
         
         self.boot_manager = bootloader.BootManager(self)
@@ -103,12 +104,15 @@ class MCan:
             obj = sources.construct(self, **s)
             if obj is not None: self.source(obj)
         self.setup["options"].update(setup["options"])
+        for e in setup["extensions"]:
+            if e not in self.setup["extensions"]: self.setup["extensions"].append(e)
         
         def load_stream_rec(target, setup):
             for u in setup:
                 s = target.exec(self.function_from_string(u[1]), u[0])
                 load_stream_rec(s, u[2])
         load_stream_rec(self.rxrootstream, setup["rx"])
+        load_stream_rec(self.txrootstream, setup["tx"])
 
     def close(self):
         self.stop_sources()
@@ -183,6 +187,7 @@ class MainWindow(tkinter.Tk):
 
         self.menubar = tkinter.Menu(self)
         self.setupmenu = tkinter.Menu(self.menubar, tearoff=0)
+        self.setupmenu.add_command(label="Configure", command=self.configure_setup)
         self.setupmenu.add_command(label="Load setup", command=self.save_setup)
         self.setupmenu.add_command(label="Save setup", command=lambda: self.save_setup(False))
         self.setupmenu.add_command(label="Save setup as default", command=lambda: self.save_setup(True))
@@ -190,6 +195,8 @@ class MainWindow(tkinter.Tk):
         self.bootmenu = tkinter.Menu(self.menubar, tearoff=0)
         self.bootmenu.add_command(label="Bootloader", command=self.open_bootloader)
         self.menubar.add_cascade(label="Bootloader", menu=self.bootmenu)
+        self.extension_menu = tkinter.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Extensions", menu=self.extension_menu)
         self.config(menu=self.menubar)
 
         self.notebook = ttk.Notebook(self)
@@ -214,8 +221,17 @@ class MainWindow(tkinter.Tk):
 
         self.dash_targets = {}
         self.dash_queue = queue.Queue()
+
+        old_path = sys.path
+        for ext in self.inst.setup["extensions"]:
+            path, name = ext.rsplit("/", 1)
+            sys.path = old_path + [path]
+            __import__(name.strip(".py")).module_init(self)
         
         self.ts = time.time()
+
+    def configure_setup(self):
+        mcan_config.ConfigMenu(self.inst)
 
     def save_setup(self, default):
         if default:

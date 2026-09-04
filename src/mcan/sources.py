@@ -215,6 +215,9 @@ class Replay:
             "scale": self.scale
         }
 
+    def dump_string(self):
+        return "Replay", f"{self.fname} -> bus {self.bus}"
+
 class MCAN_Ethernet:
     def __init__(self, inst, ip, port, tcp=False):
         self.ip = ip
@@ -267,7 +270,7 @@ class MCAN_Ethernet:
                 if bus == 4:
                     newmsb = struct.unpack("<I", frame[i+8:i+12])[0]<<16
                     if newmsb < msb:
-                        print("Warning: backwards jump in timestamp packet ({} to {})".format(msb>>16, newmsb>>16))
+                        #print("Warning: backwards jump in timestamp packet ({} to {})".format(msb>>16, newmsb>>16))
                         offset = newmsb - (msb - offset)
                     elif not msb_loaded:
                         msb_loaded = True
@@ -281,7 +284,6 @@ class MCAN_Ethernet:
         if self.abortpipe_r is not None: os.close(self.abortpipe_r)
 
     def transmit(self, packet):
-        #print("transmit", packet)
         frame = struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), 0, packet["id"])+packet["data"]
         self.socket.sendto(frame, (self.ip, self.port))
 
@@ -298,6 +300,9 @@ class MCAN_Ethernet:
             "ip": self.ip,
             "port": self.port
         }
+
+    def dump_string(self):
+        return "IP", f"{'TCP' if self.tcp else 'UDP'} on {self.ip}:{self.port}"
 
 
 def construct(inst, type, **kwargs):

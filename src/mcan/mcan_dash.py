@@ -86,6 +86,8 @@ class CANDashboard(tkinter.Frame):
                         values=("", "", l["value"][v]["name"], v , "", 0))
                 l["value"][v]["count"] += 1
                 l["value"][v]["cycle"] = packet["ts"] - l["value"][v]["last_ts"]
+                #if packet["ts"] - l["value"][v]["last_ts"] < 0:
+                #    print("Packet {} has negative cycle from {}\n", packet, l["value"][v]["last_ts"])
                 l["value"][v]["last_ts"] = packet["ts"]
                 self.apply_packet(packet, dec, t[l["name"]][v], l["value"][v])
             else:
@@ -130,6 +132,8 @@ class CANDashboard(tkinter.Frame):
         el = self.dash_elements[index]
         el["count"] += 1
         el["cycle"] = packet["ts"] - el["last_ts"]
+        #if packet["ts"] - el["last_ts"] < 0:
+        #    print("Packet {} has negative cycle from {}: {}".format(packet, el["last_ts"], el["cycle"]))
         el["last_ts"] = packet["ts"]
         el["raw"] = packet["data"]
         if msg is not None:
