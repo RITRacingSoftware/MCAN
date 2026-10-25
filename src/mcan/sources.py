@@ -4,6 +4,7 @@ import math
 import threading
 import random
 import socket
+import selectors
 import struct
 import serial
 import zlib
@@ -303,6 +304,94 @@ class MCAN_Ethernet:
 
     def dump_string(self):
         return "IP", f"{'TCP' if self.tcp else 'UDP'} on {self.ip}:{self.port}"
+
+class TCPServer:
+    def __init__(self, inst, ip, port):
+        self.ip = ip
+        self.port = port
+        self.inst = inst
+        self.socket = None
+        self.running = True
+        self.abortpipe_r = None
+        self.abortpipe_w = None
+        self.last_ts = 0
+        self.recv_ts = 0
+        self.unread = {}
+        self.sel = selectors.DefaultSelector()
+
+    def start(self):
+        self.socket = socket.socket()
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        self.socket.bind((self.ip, self.port))
+        self.socket.listen(100)
+        self.socket.setblocking(False)
+        self.sel.register(self.socket, selectors.EVENT_READ, self.accept)
+
+        threading.Thread(target=self.run).start()
+
+    def stop(self):
+        self.running = False
+        self.socket.close()
+        for obj, val in self.sel.get_map().items():
+            if val.fileobj == self.socket: continue
+            print("Closing open connection", obj, val)
+            val.fileobj.shutdown(socket.SHUT_RDWR)
+
+    def transmit(self, packet):
+        ts_us = int(packet["ts"])
+        bv = bytearray([])
+        if (ts_us >> 16) != self.last_ts:
+            self.last_ts = ts_us >> 16
+            bv += struct.pack("<BBHII", 4, 4, ts_us & 0xffff, 0, self.last_ts)
+        bv += struct.pack("<BBHI", packet["bus"], (0x80 if packet["fd"] else 0) | (len(packet["data"])), ts_us & 0xffff, packet["id"])+packet["data"]
+        for obj, val in self.sel.get_map().items():
+            if val.fileobj == self.socket: continue
+            val.fileobj.send(bv)
+
+    def accept(self, sock, mask):
+        conn, addr = sock.accept()  # Should be ready
+        print('accepted', conn, 'from', addr)
+        conn.setblocking(False)
+        self.unread[conn.fileno()] = bytearray([])
+        self.sel.register(conn, selectors.EVENT_READ, self.read)
+
+    def read(self, conn, mask):
+        data = conn.recv(1500)  # Should be ready
+        if data:
+            frame = self.unread[conn.fileno()] + data
+            i = 0
+            while i+1 < len(frame) and i+(frame[i+1]&0x7f)+8 <= len(frame):
+                bus, length, ts, id = struct.unpack("<BBHI", frame[i:i+8])
+                if bus == 4:
+                    self.recv_ts = struct.unpack("<I", frame[i+8:i+12])[0]<<16
+                else:
+                    packet = {"bus": bus, "id": id, "data": frame[i+8:i+8+(length&0x7f)], "ts": (self.recv_ts<<16) + ts, "fd": length>>7}
+                    # Special behavior just for TCPServer
+                    # TODO: unified behavior, maybe have independent RX/TX streams for each source?
+                    self.inst.transmit(packet)
+                i += (length & 0x7f)+8
+            self.unread[conn.fileno()] = frame[i:]
+        else:
+            print('closing', conn)
+            self.sel.unregister(conn)
+            conn.close()
+
+    def run(self):
+        while self.running:
+            events = self.sel.select(timeout=0.1)
+            for key, mask in events:
+
+                callback = key.data
+                callback(key.fileobj, mask)
+    
+    def dump(self):
+        return {
+            "type": "tcp_server",
+            "ip": self.ip,
+            "port": self.port
+        }
+
 
 
 def construct(inst, type, **kwargs):

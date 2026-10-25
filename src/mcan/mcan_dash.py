@@ -78,7 +78,7 @@ class CANDashboard(tkinter.Frame):
                         "name": "",
                         "raw": (v,),
                         "signals": [],
-                        "count": 0,
+                        "count": 1,
                         "cycle": 0,
                         "last_ts": packet["ts"]
                     }
@@ -117,7 +117,7 @@ class CANDashboard(tkinter.Frame):
                 "name": msg.name if msg is not None else "",
                 "raw": packet["data"],
                 "signals": [],
-                "count": 0,
+                "count": 1,
                 "cycle": 0,
                 "last_ts": packet["ts"]
             }
